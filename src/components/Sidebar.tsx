@@ -32,11 +32,9 @@ export function Sidebar({
     <>
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col bg-sidebar transition-sidebar ${
-          isOpen ? "w-[260px]" : "w-0 opacity-0 pointer-events-none"
-        } md:relative md:opacity-100 md:pointer-events-auto ${
-          isOpen ? "md:w-[260px]" : "md:w-0"
-        }`}
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col bg-sidebar transition-sidebar ${isOpen ? "w-[260px]" : "w-0 opacity-0 pointer-events-none"
+          } md:relative md:opacity-100 md:pointer-events-auto ${isOpen ? "md:w-[260px]" : "md:w-0"
+          }`}
       >
         {/* Sidebar Header */}
         <div className="flex items-center justify-between h-14 px-3">
@@ -69,7 +67,7 @@ export function Sidebar({
 
         {/* Chat History */}
         <div className="flex-1 overflow-y-auto px-2 pb-4">
-          {sessionsList.length > 0 && (
+          {sessionsList && sessionsList.length > 0 && (
             <div className="space-y-0.5">
               {sessionsList.map((session) => (
                 <div
@@ -80,38 +78,37 @@ export function Sidebar({
                 >
                   <button
                     onClick={() => onLoadChat(session.id)}
-                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors text-sm ${
-                      sessionId === session.id
-                        ? "bg-sidebar-accent text-sidebar-foreground"
-                        : "text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                    }`}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors text-sm ${sessionId === session.id
+                      ? "bg-sidebar-accent text-sidebar-foreground"
+                      : "text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                      }`}
                   >
                     <MessageSquare className="w-4 h-4 shrink-0 opacity-70" />
                     <span className="truncate flex-1 pr-8">{session.preview}</span>
                   </button>
-                  
+
                   {/* Hover Actions */}
                   {hoveredSession === session.id && (
                     <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-sidebar-accent rounded-md p-0.5">
                       <button className="p-1 rounded hover:bg-sidebar-border transition-colors text-muted-foreground hover:text-foreground">
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
-                      <button 
+                      <button
                         onClick={(e) => {
                           e.stopPropagation();
                           onDeleteChat(session.id);
                         }}
-                          className="p-1 rounded hover:bg-sidebar-border transition-colors text-muted-foreground hover:text-foreground"
-                        >
+                        className="p-1 rounded hover:bg-sidebar-border transition-colors text-muted-foreground hover:text-foreground"
+                      >
                         <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                      </button>
                     </div>
                   )}
                 </div>
               ))}
             </div>
           )}
-          {sessionsList.length === 0 && (
+          {sessionsList && sessionsList.length === 0 && (
             <div className="px-3 py-8 text-center">
               <p className="text-sm text-muted-foreground">
                 No conversations yet

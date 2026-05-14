@@ -1,22 +1,39 @@
 import { NextResponse } from "next/server";
 
-// THIS IS CRITICAL: Stops Next.js from buffering the stream!
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    const { messages, language, stream } = body;
 
-    // ⚠️ REPLACE WITH YOUR CURRENT NGROK URL ⚠️
-    const response = await fetch("https://nonvisiting-coessentially-rosette.ngrok-free.dev/openai/v1/chat/completions", {
+    if (!messages || !Array.isArray(messages)) {
+      return NextResponse.json({ error: "A valid messages array is required." }, { status: 400 });
+    }
+
+    const payload = {
+      messages: messages,
+      language: language || "en",
+      stream: stream !== undefined ? stream : true
+    };
+
+    // Replace with your active Ngrok URL
+    const backendUrl = "https://nonvisiting-coessentially-rosette.ngrok-free.dev/openai/v1/chat/completions";
+
+    const response = await fetch(backendUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     });
 
-    // Pipe it directly with stream headers
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Upstream Backend Error:", response.status, errorText);
+      return NextResponse.json({ error: "Backend inference failure." }, { status: response.status });
+    }
+
     return new Response(response.body, {
       headers: {
         "Content-Type": "text/event-stream",
@@ -26,7 +43,7 @@ export async function POST(req: Request) {
     });
 
   } catch (error) {
-    console.error("Error calling Python backend:", error);
-    return NextResponse.json({ error: "Failed to generate response" }, { status: 500 });
+    console.error("API Route Execution Error:", error);
+    return NextResponse.json({ error: "Internal server routing error." }, { status: 500 });
   }
 }

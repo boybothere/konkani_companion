@@ -1,186 +1,222 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { saveMessage, getChatHistory, getAllSessions, deleteSession } from "@/lib/db";
-import { Sidebar } from "@/components/Sidebar";
+import React, { useState, useEffect } from "react";
 import { Header } from "@/components/Header";
 import { ChatMessages } from "@/components/ChatMessages";
-import { ChatInput } from "@/components/ChatInput";
+import ChatInput from "@/components/ChatInput";
+import { Sidebar } from "@/components/Sidebar";
 
 type Message = {
   role: "user" | "assistant" | "system";
   content: string;
 };
 
-type Session = {
-  id: string;
-  preview: string;
-};
-
 export default function Home() {
+  const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [transcription, setTranscription] = useState("");
 
-  const [sessionId, setSessionId] = useState("");
-  const [sessionsList, setSessionsList] = useState<Session[]>([]);
+  // --- SIDEBAR & PERSISTENCE STATE ---
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [sessionsList, setSessionsList] = useState<{ id: string, preview: string }[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState("default-session");
 
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "system", content: "Welcome! Start a conversation with your AI assistant." },
-  ]);
-
-  // Just start a new chat and load history on mount
-  useEffect(() => {
-    startNewChat();
-    refreshSidebar();
-  }, []);
-
-  const refreshSidebar = async () => {
-    const pastSessions = await getAllSessions();
-    setSessionsList(pastSessions);
-  };
-
-  const startNewChat = () => {
-    const newSessionId = "chat-" + Math.random().toString(36).substring(2, 9);
-    setSessionId(newSessionId);
-    setMessages([
-      { role: "system", content: "Welcome! Start a conversation with your AI assistant." },
-    ]);
-  };
-
-  const loadOldChat = async (id: string) => {
-    setSessionId(id);
-    setMessages([{ role: "system", content: "Loading conversation..." }]);
-    const history = await getChatHistory(id);
-
-    if (history.length > 0) {
-      setMessages(history);
-    } else {
-      setMessages([{ role: "system", content: "No messages found for this session." }]);
-    }
-  };
-
-  const handleDeleteChat = async (id: string) => {
-    try {
-      await deleteSession(id);
-      setSessionsList((prev) => prev.filter((s) => s.id !== id));
-
-      if (sessionId === id) {
-        startNewChat();
+  // --- LOCAL STORAGE SYNC ENGINE ---
+  const syncSidebarFromStorage = () => {
+    const sessions = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("chat_")) {
+        const id = key.replace("chat_", "");
+        const chatData = JSON.parse(localStorage.getItem(key) || "[]");
+        if (chatData.length > 0) {
+          sessions.push({
+            id,
+            preview: chatData[0].content.substring(0, 30) + "...",
+          });
+        }
       }
-    } catch (error) {
-      console.error("Failed to delete chat:", error);
     }
+    // Sort so newest is at the top (optional but recommended)
+    sessions.sort((a, b) => Number(b.id) - Number(a.id));
+    setSessionsList(sessions);
   };
 
-  const sendMessage = async (userText: string) => {
-    // Removed the check for selectedModel
-    if (!userText.trim() || isLoading || !sessionId) return;
+  // 1. LOAD CHAT ON MOUNT & UPDATE SIDEBAR
+  useEffect(() => {
+    const saved = localStorage.getItem(`chat_${currentSessionId}`);
+    if (saved) {
+      setMessages(JSON.parse(saved));
+    } else {
+      setMessages([]); // Clear if it's a completely new session
+    }
+    syncSidebarFromStorage();
+  }, [currentSessionId]);
 
-    const userMessage: Message = { role: "user", content: userText };
-    const currentMessages = [...messages, userMessage];
+  // 2. SAVE CHAT ON CHANGE (Local Storage)
+  useEffect(() => {
+    if (messages.length > 0) {
+      localStorage.setItem(`chat_${currentSessionId}`, JSON.stringify(messages));
+      syncSidebarFromStorage();
+    }
+  }, [messages, currentSessionId]);
 
-    // ONLY append the user message for now.
-    setMessages(currentMessages);
+  // --- TEXT HANDLING & STREAMING ---
+  const handleSendMessage = async (content: string, language: "en" | "kok") => {
+    if (!content.trim()) return;
 
-    // This triggers YOUR loading bubble (...)
+    const newMessages: Message[] = [...messages, { role: "user", content }];
+    setMessages(newMessages);
     setIsLoading(true);
 
-    await saveMessage(sessionId, "user", userText);
-    refreshSidebar();
-
+    // --- FIREBASE SAVE TRIGGER (Silent Background Task) ---
     try {
-      const response = await fetch("/api/chat", {
+      fetch("/api/save-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: currentSessionId, messages: newMessages })
+      }).catch(err => console.warn("Firebase save pending:", err));
+    } catch (e) {
+      // Ignored: we rely on localStorage as the primary fast-cache
+    }
+
+    // --- LLM STREAMING ENGINE ---
+    try {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: currentMessages.filter((m) => m.role !== "system"),
-          model: "llama-3.3-70b-versatile", // Hardcoded!
+          messages: newMessages,
+          language: language,
           stream: true,
         }),
       });
 
-      if (!response.ok) throw new Error("Failed to fetch response");
+      if (!res.ok) throw new Error(await res.text());
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let assistantContent = "";
-      let buffer = "";
-      let isFirstChunk = true;
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let assistantMessage = "";
+
+      setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
       if (reader) {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split("\n\n");
-          buffer = parts.pop() || "";
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
 
-          for (const part of parts) {
-            const line = part.replace(/^data: /, "").trim();
-            if (line === "[DONE]") break;
-            if (!line) continue;
+          for (const line of lines) {
+            if (line.startsWith("data: ") && line.trim() !== "data: [DONE]") {
+              try {
+                const jsonStr = line.slice(6); // ← safe prefix removal, not .replace()
+                if (!jsonStr.trim()) continue;  // ← skip empty lines
+                const data = JSON.parse(jsonStr);
+                const textChunk = data.choices[0]?.delta?.content || "";
+                assistantMessage += textChunk;
 
-            try {
-              const data = JSON.parse(line);
-              const delta = data.choices[0]?.delta?.content || "";
-              if (!delta) continue;
-
-              assistantContent += delta;
-
-              // If this is the first word, kill the loading bubble and create the assistant message
-              if (isFirstChunk) {
-                setIsLoading(false);
-                setMessages((prev) => [...prev, { role: "assistant", content: assistantContent }]);
-                isFirstChunk = false;
-              } else {
-                // Otherwise, safely update the existing assistant message
                 setMessages((prev) => {
-                  const newMessages = [...prev];
-                  newMessages[newMessages.length - 1].content = assistantContent;
-                  return newMessages;
+                  const updatedMessages = [...prev];
+                  updatedMessages[updatedMessages.length - 1].content = assistantMessage;
+                  return updatedMessages;
                 });
+              } catch (e) {
+                console.warn("Skipping malformed chunk:", line); // ← warn not error, keeps going
               }
-            } catch (e) {
-              // Ignore partial JSON
             }
           }
         }
       }
 
-      await saveMessage(sessionId, "assistant", assistantContent);
+      // Save the final assistant response to Firebase silently
+      fetch("/api/save-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: currentSessionId,
+          messages: [...newMessages, { role: "assistant", content: assistantMessage }]
+        })
+      }).catch(() => { });
 
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
+      console.error("Chat Error:", error);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Sorry, I encountered an error communicating with the server." },
+      ]);
+    } finally {
       setIsLoading(false);
-      setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${errorMessage}` }]);
     }
   };
 
+  // --- AUDIO HANDLING (INJECTS TO TEXTBOX) ---
+  const handleAudioSubmit = async (audioBlob: Blob) => {
+    setIsLoading(true);
+    const formData = new FormData();
+    formData.append("file", audioBlob, "audio.webm");
+
+    try {
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) throw new Error("Transcription failed");
+      const data = await res.json();
+
+      setTranscription(data.text);
+      setTimeout(() => setTranscription(""), 100);
+
+    } catch (error) {
+      console.error("Audio Error:", error);
+      alert("❌ Transcription failed. Check Colab logs.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // --- SIDEBAR HANDLERS ---
+  const handleNewChat = () => {
+    const newId = Date.now().toString();
+    setCurrentSessionId(newId);
+    setMessages([]);
+  };
+
   return (
-    <div className="flex h-screen bg-background overflow-hidden">
+    <div className="flex h-screen bg-[#212121] text-white font-sans overflow-hidden">
       <Sidebar
-        isOpen={sidebarOpen}
-        onToggle={() => setSidebarOpen(!sidebarOpen)}
-        sessionId={sessionId}
+        isOpen={isSidebarOpen}
+        onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+        sessionId={currentSessionId}
         sessionsList={sessionsList}
-        onNewChat={startNewChat}
-        onLoadChat={loadOldChat}
-        onDeleteChat={handleDeleteChat}
+        onNewChat={handleNewChat}
+        onLoadChat={(id) => setCurrentSessionId(id)}
+        onDeleteChat={(id) => {
+          localStorage.removeItem(`chat_${id}`);
+          if (id === currentSessionId) {
+            handleNewChat(); // Reset if deleting current chat
+          } else {
+            syncSidebarFromStorage(); // Otherwise just refresh the list
+          }
+        }}
       />
 
-      <main className="flex-1 flex flex-col min-w-0 h-full relative">
-        {/* Header no longer requires props */}
+      <main className="flex-1 flex flex-col h-full relative border-l border-gray-700">
         <Header />
 
-        <ChatMessages messages={messages} isLoading={isLoading} />
+        <div className="flex-1 overflow-y-auto w-full">
+          <ChatMessages messages={messages} isLoading={isLoading} />
+        </div>
 
-        {/* Removed isModelsLoading dependency from isDisabled */}
-        <ChatInput
-          onSend={sendMessage}
-          isLoading={isLoading}
-          isDisabled={isLoading}
-        />
+        <div className="w-full pb-4 pt-2">
+          <ChatInput
+            onSendMessage={handleSendMessage}
+            onAudioSubmit={handleAudioSubmit}
+            transcribedText={transcription}
+          />
+        </div>
       </main>
     </div>
   );

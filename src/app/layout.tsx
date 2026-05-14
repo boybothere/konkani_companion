@@ -23,6 +23,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} h-full antialiased dark`}>
+      <head>
+        {/* Load the Google Transliteration API here */}
+        <script type="text/javascript" src="https://www.google.com/inputtools/js/api/jsapi?itc=hi-t-i0-und"></script>
+      </head>
       <body className="min-h-full flex flex-col bg-background text-foreground">
         {children}
       </body>

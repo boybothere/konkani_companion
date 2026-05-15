@@ -5,23 +5,26 @@ import { Header } from "@/components/Header";
 import { ChatMessages } from "@/components/ChatMessages";
 import ChatInput from "@/components/ChatInput";
 import { Sidebar } from "@/components/Sidebar";
+import DocumentTab from "@/components/DocumentTab";
+import { MessageSquare, FileSearch } from "lucide-react";
 
 type Message = {
   role: "user" | "assistant" | "system";
   content: string;
 };
 
+type Tab = "chat" | "document";
+
 export default function Home() {
+  const [activeTab, setActiveTab] = useState<Tab>("chat");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [transcription, setTranscription] = useState("");
 
-  // --- SIDEBAR & PERSISTENCE STATE ---
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [sessionsList, setSessionsList] = useState<{ id: string, preview: string }[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState("default-session");
 
-  // --- LOCAL STORAGE SYNC ENGINE ---
   const syncSidebarFromStorage = () => {
     const sessions = [];
     for (let i = 0; i < localStorage.length; i++) {
@@ -37,23 +40,20 @@ export default function Home() {
         }
       }
     }
-    // Sort so newest is at the top (optional but recommended)
     sessions.sort((a, b) => Number(b.id) - Number(a.id));
     setSessionsList(sessions);
   };
 
-  // 1. LOAD CHAT ON MOUNT & UPDATE SIDEBAR
   useEffect(() => {
     const saved = localStorage.getItem(`chat_${currentSessionId}`);
     if (saved) {
       setMessages(JSON.parse(saved));
     } else {
-      setMessages([]); // Clear if it's a completely new session
+      setMessages([]);
     }
     syncSidebarFromStorage();
   }, [currentSessionId]);
 
-  // 2. SAVE CHAT ON CHANGE (Local Storage)
   useEffect(() => {
     if (messages.length > 0) {
       localStorage.setItem(`chat_${currentSessionId}`, JSON.stringify(messages));
@@ -61,7 +61,6 @@ export default function Home() {
     }
   }, [messages, currentSessionId]);
 
-  // --- TEXT HANDLING & STREAMING ---
   const handleSendMessage = async (content: string, language: "en" | "kok") => {
     if (!content.trim()) return;
 
@@ -69,27 +68,19 @@ export default function Home() {
     setMessages(newMessages);
     setIsLoading(true);
 
-    // --- FIREBASE SAVE TRIGGER (Silent Background Task) ---
     try {
       fetch("/api/save-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: currentSessionId, messages: newMessages })
       }).catch(err => console.warn("Firebase save pending:", err));
-    } catch (e) {
-      // Ignored: we rely on localStorage as the primary fast-cache
-    }
+    } catch (e) { }
 
-    // --- LLM STREAMING ENGINE ---
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: newMessages,
-          language: language,
-          stream: true,
-        }),
+        body: JSON.stringify({ messages: newMessages, language, stream: true }),
       });
 
       if (!res.ok) throw new Error(await res.text());
@@ -111,26 +102,24 @@ export default function Home() {
           for (const line of lines) {
             if (line.startsWith("data: ") && line.trim() !== "data: [DONE]") {
               try {
-                const jsonStr = line.slice(6); // ← safe prefix removal, not .replace()
-                if (!jsonStr.trim()) continue;  // ← skip empty lines
+                const jsonStr = line.slice(6);
+                if (!jsonStr.trim()) continue;
                 const data = JSON.parse(jsonStr);
                 const textChunk = data.choices[0]?.delta?.content || "";
                 assistantMessage += textChunk;
-
                 setMessages((prev) => {
                   const updatedMessages = [...prev];
                   updatedMessages[updatedMessages.length - 1].content = assistantMessage;
                   return updatedMessages;
                 });
               } catch (e) {
-                console.warn("Skipping malformed chunk:", line); // ← warn not error, keeps going
+                console.warn("Skipping malformed chunk:", line);
               }
             }
           }
         }
       }
 
-      // Save the final assistant response to Firebase silently
       fetch("/api/save-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -151,24 +140,17 @@ export default function Home() {
     }
   };
 
-  // --- AUDIO HANDLING (INJECTS TO TEXTBOX) ---
   const handleAudioSubmit = async (audioBlob: Blob) => {
     setIsLoading(true);
     const formData = new FormData();
     formData.append("file", audioBlob, "audio.webm");
 
     try {
-      const res = await fetch("/api/transcribe", {
-        method: "POST",
-        body: formData,
-      });
-
+      const res = await fetch("/api/transcribe", { method: "POST", body: formData });
       if (!res.ok) throw new Error("Transcription failed");
       const data = await res.json();
-
       setTranscription(data.text);
       setTimeout(() => setTranscription(""), 100);
-
     } catch (error) {
       console.error("Audio Error:", error);
       alert("❌ Transcription failed. Check Colab logs.");
@@ -177,7 +159,6 @@ export default function Home() {
     }
   };
 
-  // --- SIDEBAR HANDLERS ---
   const handleNewChat = () => {
     const newId = Date.now().toString();
     setCurrentSessionId(newId);
@@ -196,27 +177,59 @@ export default function Home() {
         onDeleteChat={(id) => {
           localStorage.removeItem(`chat_${id}`);
           if (id === currentSessionId) {
-            handleNewChat(); // Reset if deleting current chat
+            handleNewChat();
           } else {
-            syncSidebarFromStorage(); // Otherwise just refresh the list
+            syncSidebarFromStorage();
           }
         }}
       />
 
-      <main className="flex-1 flex flex-col h-full relative border-l border-gray-700">
+      <main className="flex-1 flex flex-col h-full relative border-l border-gray-700 overflow-hidden">
         <Header />
 
-        <div className="flex-1 overflow-y-auto w-full">
-          <ChatMessages messages={messages} isLoading={isLoading} />
+        {/* ── Tab switcher ── */}
+        <div className="flex items-center gap-1 px-4 pt-3 pb-0 border-b border-gray-700">
+          <button
+            onClick={() => setActiveTab("chat")}
+            className={`flex items-center gap-2 px-4 py-2 text-sm rounded-t-lg transition-colors ${activeTab === "chat"
+              ? "bg-[#2f2f2f] text-white border border-b-0 border-gray-700"
+              : "text-gray-400 hover:text-gray-200"
+              }`}
+          >
+            <MessageSquare size={15} />
+            Chat
+          </button>
+          <button
+            onClick={() => setActiveTab("document")}
+            className={`flex items-center gap-2 px-4 py-2 text-sm rounded-t-lg transition-colors ${activeTab === "document"
+              ? "bg-[#2f2f2f] text-white border border-b-0 border-gray-700"
+              : "text-gray-400 hover:text-gray-200"
+              }`}
+          >
+            <FileSearch size={15} />
+            Document Lens
+          </button>
         </div>
 
-        <div className="w-full pb-4 pt-2">
-          <ChatInput
-            onSendMessage={handleSendMessage}
-            onAudioSubmit={handleAudioSubmit}
-            transcribedText={transcription}
-          />
-        </div>
+        {/* ── Tab content ── */}
+        {activeTab === "chat" ? (
+          <>
+            <div className="flex-1 overflow-y-auto w-full">
+              <ChatMessages messages={messages} isLoading={isLoading} />
+            </div>
+            <div className="w-full pb-4 pt-2">
+              <ChatInput
+                onSendMessage={handleSendMessage}
+                onAudioSubmit={handleAudioSubmit}
+                transcribedText={transcription}
+              />
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 overflow-hidden">
+            <DocumentTab />
+          </div>
+        )}
       </main>
     </div>
   );

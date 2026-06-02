@@ -104,6 +104,15 @@ export default function ChatInput({ onSendMessage, onAudioSubmit, transcribedTex
           id="chat-textarea"
           value={input}
           onChange={e => setInput(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              if (input.trim()) {
+                onSendMessage(input, language);
+                setInput("");
+              }
+            }
+          }}
           placeholder={language === "kok" ? "कोंकणींत बरयात…" : "Message AI..."}
           className="w-full max-h-48 min-h-[56px] bg-transparent text-gray-100 p-4 resize-none focus:outline-none"
         />

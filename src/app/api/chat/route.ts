@@ -1,49 +1,33 @@
-import { NextResponse } from "next/server";
+import { SSE_HEADERS, backendError, backendHeaders, backendUnavailable, backendUrl } from "@/lib/server/backend";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  let body: { messages?: unknown; language?: unknown };
   try {
-    const body = await req.json();
-    const { messages, language, stream } = body;
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON." }, { status: 400 });
+  }
 
-    if (!messages || !Array.isArray(messages)) {
-      return NextResponse.json({ error: "A valid messages array is required." }, { status: 400 });
-    }
+  if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    return Response.json({ error: "A non-empty messages array is required." }, { status: 400 });
+  }
 
-    const payload = {
-      messages: messages,
-      language: language || "en",
-      stream: stream !== undefined ? stream : true
-    };
-
-    // Replace with your active Ngrok URL
-    const backendUrl = "https://nonvisiting-coessentially-rosette.ngrok-free.dev/openai/v1/chat/completions";
-
-    const response = await fetch(backendUrl, {
+  try {
+    const res = await fetch(backendUrl("/openai/v1/chat/completions"), {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
+      headers: backendHeaders(req, { "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        messages: body.messages,
+        language: body.language === "kok" ? "kok" : "en",
+        stream: true,
+      }),
+      signal: req.signal, // stop backend work when the browser disconnects
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Upstream Backend Error:", response.status, errorText);
-      return NextResponse.json({ error: "Backend inference failure." }, { status: response.status });
-    }
-
-    return new Response(response.body, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        "Connection": "keep-alive",
-      },
-    });
-
+    if (!res.ok || !res.body) return backendError(res);
+    return new Response(res.body, { headers: SSE_HEADERS });
   } catch (error) {
-    console.error("API Route Execution Error:", error);
-    return NextResponse.json({ error: "Internal server routing error." }, { status: 500 });
+    return backendUnavailable(error);
   }
 }

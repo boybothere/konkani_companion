@@ -33,6 +33,7 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 .env.local
+!.env.example
 
 # vercel
 .vercel
@@ -40,3 +41,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# old Colab notebook: contains hard-coded API keys (rotate them, then delete this file)
+backend_colab.ipynb
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

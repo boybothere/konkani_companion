@@ -2,15 +2,23 @@
 
 import React, { useState, useRef } from "react";
 import { Upload, FileText, MessageSquare, Loader2, AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
-
-const COLAB_URL = process.env.NEXT_PUBLIC_COLAB_URL || "";
+import { readCompanionStream } from "@/lib/sse";
 
 interface AnalysisResult {
     ocr_text: string;
     english_translation: string;
     summary: string;
     error: boolean;
+    pages?: number;
+    method?: "pdf-text" | "ocr" | "mixed";
+    truncated?: boolean;
 }
+
+const METHOD_LABELS: Record<string, string> = {
+    "pdf-text": "text read directly from the PDF",
+    ocr: "text read with OCR",
+    mixed: "PDF text + OCR",
+};
 
 interface DocMessage {
     role: "user" | "assistant";
@@ -78,19 +86,19 @@ export default function DocumentTab() {
                 body: formData,
             });
 
+            const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                const errText = await res.text();
-                console.error("analyze-document error:", res.status, errText);
-                throw new Error(errText);
+                console.error("analyze-document error:", res.status, data);
+                throw new Error(data.error || "Failed to analyze document.");
             }
-            const data: AnalysisResult = await res.json();
-            setResult(data);
+            if (typeof data.summary !== "string") throw new Error("The server returned an unexpected response.");
+            setResult(data as AnalysisResult);
         } catch (err) {
             console.error(err);
             setResult({
                 ocr_text: "",
                 english_translation: "",
-                summary: "Failed to analyze document. Check that the Colab server is running.",
+                summary: err instanceof Error ? err.message : "Failed to analyze document.",
                 error: true,
             });
         } finally {
@@ -100,12 +108,20 @@ export default function DocumentTab() {
 
     // ── Document Q&A ────────────────────────────────────────────
     const handleAskQuestion = async () => {
-        if (!question.trim() || !result?.english_translation) return;
+        if (!question.trim() || isAsking || !result?.english_translation) return;
 
         const userMsg: DocMessage = { role: "user", content: question };
-        setDocMessages((prev) => [...prev, userMsg]);
+        setDocMessages((prev) => [...prev, userMsg, { role: "assistant", content: "" }]);
         setQuestion("");
         setIsAsking(true);
+
+        let answer = "";
+        const setAnswer = (content: string) =>
+            setDocMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: "assistant", content };
+                return updated;
+            });
 
         try {
             const res = await fetch("/api/document-chat", {
@@ -117,45 +133,28 @@ export default function DocumentTab() {
                 }),
             });
 
-            if (!res.ok) throw new Error(await res.text());
+            if (!res.ok || !res.body) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || "Error getting answer.");
+            }
 
-            const reader = res.body?.getReader();
-            const decoder = new TextDecoder();
-            let assistantMsg = "";
-
-            setDocMessages((prev) => [...prev, { role: "assistant", content: "" }]);
-
-            if (reader) {
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    const chunk = decoder.decode(value, { stream: true });
-                    for (const line of chunk.split("\n")) {
-                        if (line.startsWith("data: ") && line.trim() !== "data: [DONE]") {
-                            try {
-                                const jsonStr = line.slice(6);
-                                if (!jsonStr.trim()) continue;
-                                const data = JSON.parse(jsonStr);
-                                const text = data.choices[0]?.delta?.content || "";
-                                assistantMsg += text;
-                                setDocMessages((prev) => {
-                                    const updated = [...prev];
-                                    updated[updated.length - 1].content = assistantMsg;
-                                    return updated;
-                                });
-                            } catch (e) {
-                                console.warn("Skipping chunk:", line);
-                            }
-                        }
-                    }
+            let finished = false;
+            for await (const event of readCompanionStream(res)) {
+                if (event.type === "delta") {
+                    answer += event.text;
+                    setAnswer(answer);
+                } else if (event.type === "error") {
+                    answer = answer ? `${answer}\n\n⚠ ${event.message}` : event.message;
+                    setAnswer(answer);
+                } else if (event.type === "done") {
+                    finished = true;
                 }
             }
+            if (!finished) setAnswer(`${answer}\n\n⚠ The answer was cut off. Please try again.`.trim());
         } catch (err) {
             console.error(err);
-            setDocMessages((prev) => [
-                ...prev,
-                { role: "assistant", content: "Error getting answer. Check Colab server." },
-            ]);
+            const message = err instanceof Error ? err.message : "Error getting answer.";
+            setAnswer(answer ? `${answer}\n\n⚠ ${message}` : message);
         } finally {
             setIsAsking(false);
             setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
@@ -235,6 +234,13 @@ export default function DocumentTab() {
                                 <FileText size={16} /> Document Summary
                             </h3>
                             <p className="text-gray-200 text-sm whitespace-pre-line leading-relaxed">{result.summary}</p>
+                            {(result.method || result.truncated) && (
+                                <p className="mt-3 text-xs text-gray-500">
+                                    {result.pages ? `${result.pages} page${result.pages > 1 ? "s" : ""}` : ""}
+                                    {result.method ? ` · ${METHOD_LABELS[result.method] ?? result.method}` : ""}
+                                    {result.truncated ? " · only the first part of the document was processed" : ""}
+                                </p>
+                            )}
                         </div>
                     )}
 

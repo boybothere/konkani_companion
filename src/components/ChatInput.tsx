@@ -8,9 +8,10 @@ interface ChatInputProps {
   onSendMessage: (message: string, language: "en" | "kok") => void;
   onAudioSubmit: (audioBlob: Blob) => void;
   transcribedText?: string;
+  disabled?: boolean; // true while an answer is streaming
 }
 
-export default function ChatInput({ onSendMessage, onAudioSubmit, transcribedText }: ChatInputProps) {
+export default function ChatInput({ onSendMessage, onAudioSubmit, transcribedText, disabled = false }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [language, setLanguage] = useState<"en" | "kok">("en");
   const [isRecording, setIsRecording] = useState(false);
@@ -47,7 +48,7 @@ export default function ChatInput({ onSendMessage, onAudioSubmit, transcribedTex
   };
 
   const handleEnter = () => {
-    if (input.trim()) { onSendMessage(input, language); setInput(""); }
+    if (input.trim() && !disabled) { onSendMessage(input, language); setInput(""); }
   };
 
   const toggleRecording = async () => {
@@ -96,7 +97,7 @@ export default function ChatInput({ onSendMessage, onAudioSubmit, transcribedTex
 
       {/* Textarea */}
       <form
-        onSubmit={e => { e.preventDefault(); onSendMessage(input, language); setInput(""); }}
+        onSubmit={e => { e.preventDefault(); handleEnter(); }}
         className="bg-[#2f2f2f] border border-gray-700 rounded-2xl overflow-hidden"
       >
         <textarea
@@ -107,10 +108,7 @@ export default function ChatInput({ onSendMessage, onAudioSubmit, transcribedTex
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              if (input.trim()) {
-                onSendMessage(input, language);
-                setInput("");
-              }
+              handleEnter();
             }
           }}
           placeholder={language === "kok" ? "कोंकणींत बरयात…" : "Message AI..."}
@@ -126,7 +124,7 @@ export default function ChatInput({ onSendMessage, onAudioSubmit, transcribedTex
               {isRecording ? <Square size={20} /> : <Mic size={20} />}
             </button>
           </div>
-          <button type="submit" className="p-2 bg-white text-black rounded-lg"><Send size={20} /></button>
+          <button type="submit" disabled={disabled} className="p-2 bg-white text-black rounded-lg disabled:opacity-40"><Send size={20} /></button>
         </div>
       </form>
     </div>

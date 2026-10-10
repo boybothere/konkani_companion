@@ -1,17 +1,28 @@
-import { NextRequest } from "next/server";
+import { SSE_HEADERS, backendError, backendHeaders, backendUnavailable, backendUrl } from "@/lib/server/backend";
 
-const COLAB_URL = process.env.NEXT_PUBLIC_COLAB_URL || "";
+export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
-    const body = await req.json();
+export async function POST(req: Request) {
+  let body: { question?: unknown; document_context?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON." }, { status: 400 });
+  }
+  if (typeof body.question !== "string" || typeof body.document_context !== "string") {
+    return Response.json({ error: "question and document_context are required." }, { status: 400 });
+  }
 
-    const res = await fetch(`${COLAB_URL}/document-chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+  try {
+    const res = await fetch(backendUrl("/document-chat"), {
+      method: "POST",
+      headers: backendHeaders(req, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ question: body.question, document_context: body.document_context }),
+      signal: req.signal,
     });
-
-    return new Response(res.body, {
-        headers: { "Content-Type": "text/event-stream" },
-    });
+    if (!res.ok || !res.body) return backendError(res);
+    return new Response(res.body, { headers: SSE_HEADERS });
+  } catch (error) {
+    return backendUnavailable(error);
+  }
 }

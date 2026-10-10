@@ -2,16 +2,12 @@
 
 import React, { useState, useEffect } from "react";
 import { Header } from "@/components/Header";
-import { ChatMessages } from "@/components/ChatMessages";
+import { ChatMessages, type Message } from "@/components/ChatMessages";
 import ChatInput from "@/components/ChatInput";
 import { Sidebar } from "@/components/Sidebar";
 import DocumentTab from "@/components/DocumentTab";
 import { MessageSquare, FileSearch } from "lucide-react";
-
-type Message = {
-  role: "user" | "assistant" | "system";
-  content: string;
-};
+import { readCompanionStream } from "@/lib/sse";
 
 type Tab = "chat" | "document";
 
@@ -19,6 +15,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("chat");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
   const [transcription, setTranscription] = useState("");
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -61,63 +58,81 @@ export default function Home() {
     }
   }, [messages, currentSessionId]);
 
+  // Patch the last message (the assistant reply being streamed).
+  const updateLast = (patch: Partial<Message>) =>
+    setMessages((prev) => {
+      const next = [...prev];
+      next[next.length - 1] = { ...next[next.length - 1], ...patch };
+      return next;
+    });
+
   const handleSendMessage = async (content: string, language: "en" | "kok") => {
-    if (!content.trim()) return;
+    if (!content.trim() || isLoading) return;
 
-    const newMessages: Message[] = [...messages, { role: "user", content }];
-    setMessages(newMessages);
+    const history: Message[] = [...messages, { role: "user", content }];
+    setMessages([...history, { role: "assistant", content: "" }]);
     setIsLoading(true);
+    setStatus("starting");
 
-    try {
-      fetch("/api/save-chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: currentSessionId, messages: newMessages })
-      }).catch(err => console.warn("Firebase save pending:", err));
-    } catch (e) { }
+    fetch("/api/save-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: currentSessionId, messages: history })
+    }).catch(err => console.warn("Firebase save pending:", err));
 
+    let answer = "";
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages, language, stream: true }),
+        body: JSON.stringify({
+          // The English versions let the backend keep conversation context.
+          messages: history.map(({ role, content, english }) => ({ role, content, english })),
+          language,
+        }),
       });
 
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok || !res.body) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "The server returned an error.");
+      }
 
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      let assistantMessage = "";
-
-      setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n");
-
-          for (const line of lines) {
-            if (line.startsWith("data: ") && line.trim() !== "data: [DONE]") {
-              try {
-                const jsonStr = line.slice(6);
-                if (!jsonStr.trim()) continue;
-                const data = JSON.parse(jsonStr);
-                const textChunk = data.choices[0]?.delta?.content || "";
-                assistantMessage += textChunk;
-                setMessages((prev) => {
-                  const updatedMessages = [...prev];
-                  updatedMessages[updatedMessages.length - 1].content = assistantMessage;
-                  return updatedMessages;
-                });
-              } catch (e) {
-                console.warn("Skipping malformed chunk:", line);
-              }
-            }
-          }
+      let finished = false;
+      for await (const event of readCompanionStream(res)) {
+        switch (event.type) {
+          case "status":
+            setStatus(event.stage);
+            break;
+          case "meta":
+            setMessages((prev) => {
+              const next = [...prev];
+              const userIndex = next.length - 2;
+              if (next[userIndex]?.role === "user") next[userIndex] = { ...next[userIndex], english: event.queryEn };
+              return next;
+            });
+            break;
+          case "sources":
+            updateLast({ sources: event.sources });
+            break;
+          case "delta":
+            answer += event.text;
+            updateLast({ content: answer });
+            break;
+          case "english":
+            updateLast({ english: event.text });
+            break;
+          case "error":
+            answer = answer ? `${answer}\n\n⚠ ${event.message}` : event.message;
+            updateLast({ content: answer, error: true });
+            break;
+          case "done":
+            finished = true;
+            break;
         }
+      }
+      if (!finished) {
+        answer = `${answer}\n\n⚠ The answer was cut off. Please try again.`.trim();
+        updateLast({ content: answer, error: true });
       }
 
       fetch("/api/save-chat", {
@@ -125,18 +140,17 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId: currentSessionId,
-          messages: [...newMessages, { role: "assistant", content: assistantMessage }]
+          messages: [...history, { role: "assistant", content: answer }]
         })
       }).catch(() => { });
 
     } catch (error) {
       console.error("Chat Error:", error);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "Sorry, I encountered an error communicating with the server." },
-      ]);
+      const message = error instanceof Error ? error.message : "Sorry, I encountered an error communicating with the server.";
+      updateLast({ content: answer ? `${answer}\n\n⚠ ${message}` : message, error: true });
     } finally {
       setIsLoading(false);
+      setStatus(null);
     }
   };
 
@@ -147,13 +161,13 @@ export default function Home() {
 
     try {
       const res = await fetch("/api/transcribe", { method: "POST", body: formData });
-      if (!res.ok) throw new Error("Transcription failed");
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Transcription failed");
       setTranscription(data.text);
       setTimeout(() => setTranscription(""), 100);
     } catch (error) {
       console.error("Audio Error:", error);
-      alert("❌ Transcription failed. Check Colab logs.");
+      alert(`❌ ${error instanceof Error ? error.message : "Transcription failed."}`);
     } finally {
       setIsLoading(false);
     }
@@ -215,13 +229,14 @@ export default function Home() {
         {activeTab === "chat" ? (
           <>
             <div className="flex-1 overflow-y-auto w-full">
-              <ChatMessages messages={messages} isLoading={isLoading} />
+              <ChatMessages messages={messages} isLoading={isLoading} status={status} />
             </div>
             <div className="w-full pb-4 pt-2">
               <ChatInput
                 onSendMessage={handleSendMessage}
                 onAudioSubmit={handleAudioSubmit}
                 transcribedText={transcription}
+                disabled={isLoading}
               />
             </div>
           </>

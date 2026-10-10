@@ -8,8 +8,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "AI Chat | Premium Multi-Model Assistant",
-  description: "Experience the future of AI conversation with our premium multi-model chat interface",
+  title: "Konkani Companion",
+  description: "An AI assistant for Devanagari Konkani: voice, text and documents, answered in Konkani.",
 };
 
 export const viewport: Viewport = {
@@ -23,10 +23,6 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} h-full antialiased dark`}>
-      <head>
-        {/* Load the Google Transliteration API here */}
-        <script type="text/javascript" src="https://www.google.com/inputtools/js/api/jsapi?itc=hi-t-i0-und"></script>
-      </head>
       <body className="min-h-full flex flex-col bg-background text-foreground">
         {children}
       </body>

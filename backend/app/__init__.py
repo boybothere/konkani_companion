@@ -1,0 +1,1 @@
+"""Konkani Companion backend."""

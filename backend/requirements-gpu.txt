@@ -1,0 +1,4 @@
+# Local models (GPU). Torch comes with the Colab image / CUDA base image.
+# Unsloth (with peft, bitsandbytes, accelerate, transformers) is installed by
+# the Colab runner with `pip install unsloth`.
+openai-whisper>=20240930

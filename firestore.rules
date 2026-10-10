@@ -10,7 +10,9 @@ service cloud.firestore {
 
       allow create, update: if request.auth != null
         && request.auth.uid == userId
-        && request.resource.data.keys().hasOnly(['messages', 'preview', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['messages', 'preview', 'updatedAt', 'title'])
+        && (!('title' in request.resource.data)
+            || (request.resource.data.title is string && request.resource.data.title.size() <= 120))
         && request.resource.data.messages is list
         && request.resource.data.messages.size() <= 200
         && request.resource.data.preview is string

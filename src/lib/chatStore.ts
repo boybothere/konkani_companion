@@ -3,12 +3,21 @@
 // - Firestore users/{uid}/chats/{chatId}: follows the user across devices.
 //   Protected by firestore.rules so users can only read and write their own chats.
 
-import { collection, deleteDoc, doc, getDocs, limit, orderBy, query, setDoc } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDocs, limit, orderBy, query, setDoc, updateDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type { Message } from "@/components/ChatMessages";
 
-export type SessionSummary = { id: string; preview: string; updatedAt: number };
-type StoredChat = { messages: Message[]; preview: string; updatedAt: number };
+export type SessionSummary = {
+  id: string;
+  /** User-chosen name, or the first question when the chat hasn't been renamed. */
+  label: string;
+  updatedAt: number;
+  /** Search hits only: the text around the match. */
+  snippet?: string;
+};
+type StoredChat = { messages: Message[]; preview: string; updatedAt: number; title?: string };
+
+export const MAX_TITLE = 120; // matches firestore.rules
 
 const PREFIX = (uid: string) => `kc:${uid}:chat:`;
 const MAX_MESSAGES = 200; // matches firestore.rules
@@ -42,8 +51,57 @@ export function loadLocal(uid: string, id: string): Message[] | null {
   return readLocal(PREFIX(uid) + id)?.messages ?? null;
 }
 
+const titleOf = (uid: string, id: string) => readLocal(PREFIX(uid) + id)?.title;
+
 export function saveLocal(uid: string, id: string, messages: Message[]): void {
-  writeLocal(uid, id, { messages, preview: previewOf(messages), updatedAt: Date.now() });
+  const title = titleOf(uid, id);
+  writeLocal(uid, id, { messages, preview: previewOf(messages), updatedAt: Date.now(), ...(title ? { title } : {}) });
+}
+
+export function getTitle(uid: string, id: string): string | undefined {
+  return titleOf(uid, id);
+}
+
+/** Rename a chat locally and in Firestore. An empty title resets to the default name. */
+export async function renameChat(uid: string, id: string, title: string): Promise<void> {
+  const chat = readLocal(PREFIX(uid) + id);
+  if (!chat) return;
+  const clean = title.replace(/\s+/g, " ").trim().slice(0, MAX_TITLE);
+  const { title: _old, ...rest } = chat; // eslint-disable-line @typescript-eslint/no-unused-vars
+  writeLocal(uid, id, clean ? { ...rest, title: clean } : rest);
+  await updateDoc(chatDoc(uid, id), { title: clean });
+}
+
+/** Search chat names and the full text of every message (this browser's cache). */
+export function searchLocal(uid: string, rawQuery: string): SessionSummary[] {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return listLocal(uid);
+  const prefix = PREFIX(uid);
+  const out: SessionSummary[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key?.startsWith(prefix)) continue;
+    const chat = readLocal(key);
+    if (!chat || chat.messages.length === 0) continue;
+    const label = chat.title || chat.preview;
+    let snippet: string | undefined;
+    if (!label.toLowerCase().includes(q)) {
+      for (const m of chat.messages) {
+        for (const text of [m.content, m.english ?? ""]) {
+          const at = text.toLowerCase().indexOf(q);
+          if (at >= 0) {
+            const start = Math.max(0, at - 30);
+            snippet = (start > 0 ? "…" : "") + text.slice(start, at + q.length + 50).replace(/\s+/g, " ").trim() + "…";
+            break;
+          }
+        }
+        if (snippet) break;
+      }
+      if (!snippet) continue;
+    }
+    out.push({ id: key.slice(prefix.length), label, updatedAt: chat.updatedAt ?? 0, snippet });
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function listLocal(uid: string): SessionSummary[] {
@@ -54,7 +112,7 @@ export function listLocal(uid: string): SessionSummary[] {
     if (!key?.startsWith(prefix)) continue;
     const chat = readLocal(key);
     if (chat && chat.messages.length > 0) {
-      out.push({ id: key.slice(prefix.length), preview: chat.preview, updatedAt: chat.updatedAt ?? 0 });
+      out.push({ id: key.slice(prefix.length), label: chat.title || chat.preview, updatedAt: chat.updatedAt ?? 0 });
     }
   }
   return out.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -105,7 +163,13 @@ export function migrateLegacy(uid: string): string[] {
 const chatDoc = (uid: string, id: string) => doc(db, "users", uid, "chats", id);
 
 export async function saveRemote(uid: string, id: string, messages: Message[]): Promise<void> {
-  await setDoc(chatDoc(uid, id), { messages: clean(messages), preview: previewOf(messages), updatedAt: Date.now() });
+  const title = titleOf(uid, id);
+  await setDoc(chatDoc(uid, id), {
+    messages: clean(messages),
+    preview: previewOf(messages),
+    updatedAt: Date.now(),
+    ...(title ? { title } : {}),
+  });
 }
 
 export async function deleteRemote(uid: string, id: string): Promise<void> {
@@ -125,6 +189,7 @@ export async function syncFromRemote(uid: string, max = 50): Promise<void> {
         messages: data.messages,
         preview: data.preview ?? previewOf(data.messages),
         updatedAt: data.updatedAt ?? 0,
+        ...(data.title ? { title: data.title } : {}),
       });
     }
   });

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { Header, type Tab } from "@/components/Header";
 import { ChatMessages, type Message } from "@/components/ChatMessages";
 import ChatInput from "@/components/ChatInput";
+import { ChatToolbar } from "@/components/ChatToolbar";
 import { Sidebar } from "@/components/Sidebar";
 import DocumentTab from "@/components/DocumentTab";
 import { readCompanionStream } from "@/lib/sse";
@@ -38,6 +39,7 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   const [desktopSidebar, setDesktopSidebar] = useState(true);
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [sessionsList, setSessionsList] = useState<chatStore.SessionSummary[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
   const [currentSessionId, setCurrentSessionId] = useState(newSessionId);
 
   const syncSidebarFromStorage = () => setSessionsList(chatStore.listLocal(uid));
@@ -59,19 +61,22 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   }, [uid]);
 
   useEffect(() => {
-    setMessages(normalise(chatStore.loadLocal(uid, currentSessionId) ?? []));
+    const loaded = normalise(chatStore.loadLocal(uid, currentSessionId) ?? []);
+    // Opening a chat is not a change: don't re-save it (that would bump it to the top).
+    savedRef.current[currentSessionId] = JSON.stringify(loaded);
+    setMessages(loaded);
     syncSidebarFromStorage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, currentSessionId]);
 
   useEffect(() => {
     if (messages.length === 0) return;
+    const snapshot = JSON.stringify(messages);
+    if (savedRef.current[currentSessionId] === snapshot) return; // unchanged since load or last save
     chatStore.saveLocal(uid, currentSessionId, messages);
     syncSidebarFromStorage();
     // Save to Firestore once an answer has finished, not on every streamed chunk.
     if (isLoading) return;
-    const snapshot = JSON.stringify(messages);
-    if (savedRef.current[currentSessionId] === snapshot) return;
     savedRef.current[currentSessionId] = snapshot;
     chatStore.saveRemote(uid, currentSessionId, messages).catch((err) => console.warn("Cloud save failed:", err));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -209,6 +214,15 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
     setMessages([]);
   };
 
+  const renameChat = (id: string, title: string) => {
+    chatStore.renameChat(uid, id, title).catch((err) => console.warn("Cloud rename failed:", err));
+    syncSidebarFromStorage();
+  };
+
+  const currentTitle =
+    chatStore.getTitle(uid, currentSessionId) ||
+    (messages.find((m) => m.role === "user")?.content ?? "New chat").replace(/\s+/g, " ").slice(0, 60);
+
   const toggleSidebar = () => {
     if (isDesktop()) setDesktopSidebar((v) => !v);
     else setMobileSidebar((v) => !v);
@@ -226,7 +240,10 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         mobileOpen={mobileSidebar}
         onClose={closeSidebar}
         sessionId={currentSessionId}
-        sessionsList={sessionsList}
+        sessionsList={searchQuery.trim() ? chatStore.searchLocal(uid, searchQuery) : sessionsList}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        onRenameChat={renameChat}
         account={{ name: user.displayName, email: user.email, photoURL: user.photoURL }}
         onSignOut={() => {
           runRef.current++;
@@ -248,7 +265,16 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <Header onToggleSidebar={toggleSidebar} activeTab={activeTab} onTabChange={setActiveTab} />
+        <Header onToggleSidebar={toggleSidebar} activeTab={activeTab} onTabChange={setActiveTab}>
+          {activeTab === "chat" && messages.length > 0 && (
+            <ChatToolbar
+              title={currentTitle}
+              messages={messages}
+              busy={isLoading}
+              onRename={(title) => renameChat(currentSessionId, title)}
+            />
+          )}
+        </Header>
 
         {/* Both tabs stay mounted so switching is instant and keeps their state */}
         <div className={`min-h-0 flex-1 flex-col ${activeTab === "chat" ? "flex" : "hidden"}`}>

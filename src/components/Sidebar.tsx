@@ -1,10 +1,13 @@
 "use client";
 
-import { PanelLeftClose, Plus, MessageSquare, Trash2, LogOut } from "lucide-react";
+import { useRef, useState } from "react";
+import { PanelLeftClose, Plus, MessageSquare, Trash2, LogOut, Pencil, Search, X } from "lucide-react";
 
 type Session = {
   id: string;
-  preview: string;
+  label: string;
+  /** Present for search results: text around the match. */
+  snippet?: string;
 };
 
 interface SidebarProps {
@@ -18,6 +21,9 @@ interface SidebarProps {
   onNewChat: () => void;
   onLoadChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
+  onRenameChat: (id: string, title: string) => void;
+  searchQuery: string;
+  onSearchChange: (query: string) => void;
   account: { name: string | null; email: string | null; photoURL: string | null };
   onSignOut: () => void;
 }
@@ -31,10 +37,29 @@ export function Sidebar({
   onNewChat,
   onLoadChat,
   onDeleteChat,
+  onRenameChat,
+  searchQuery,
+  onSearchChange,
   account,
   onSignOut,
 }: SidebarProps) {
   const initial = (account.name || account.email || "?").trim().charAt(0).toUpperCase();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const editRef = useRef<HTMLInputElement>(null);
+
+  const startRename = (session: Session) => {
+    setEditingId(session.id);
+    setDraft(session.label);
+    requestAnimationFrame(() => editRef.current?.select());
+  };
+
+  const commitRename = (session: Session) => {
+    setEditingId(null);
+    if (draft.trim() !== session.label) onRenameChat(session.id, draft);
+  };
+
+  const searching = searchQuery.trim().length > 0;
 
   return (
     <>
@@ -67,48 +92,109 @@ export function Sidebar({
           </button>
         </div>
 
+        <div className="px-3 pb-2">
+          <label className="flex items-center gap-2 rounded-lg border border-border bg-surface-2/60 px-2.5 py-1.5 text-sm transition-colors focus-within:border-border-strong">
+            <Search className="h-3.5 w-3.5 shrink-0 text-subtle-foreground" />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && onSearchChange("")}
+              placeholder="Search chats"
+              aria-label="Search chats"
+              className="min-w-0 flex-1 bg-transparent text-sidebar-foreground placeholder:text-subtle-foreground focus:outline-none [&::-webkit-search-cancel-button]:hidden"
+            />
+            {searching && (
+              <button type="button" onClick={() => onSearchChange("")} aria-label="Clear search" className="text-subtle-foreground hover:text-foreground">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </label>
+        </div>
+
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
           {sessionsList.length > 0 ? (
             <>
               <p className="px-3 pb-1.5 pt-2 text-[11px] font-medium uppercase tracking-wider text-subtle-foreground">
-                Recent
+                {searching ? `${sessionsList.length} result${sessionsList.length === 1 ? "" : "s"}` : "Recent"}
               </p>
               <ul className="space-y-0.5">
                 {sessionsList.map((session) => (
                   <li key={session.id} className="group relative">
+                    {editingId === session.id ? (
+                      <input
+                        ref={editRef}
+                        value={draft}
+                        maxLength={120}
+                        onChange={(e) => setDraft(e.target.value)}
+                        onBlur={() => commitRename(session)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename(session);
+                          if (e.key === "Escape") setEditingId(null);
+                        }}
+                        aria-label="Chat name"
+                        className="w-full rounded-lg border border-border-strong bg-surface-2 px-3 py-2 text-sm text-foreground focus:outline-none"
+                      />
+                    ) : (
+                    <>
                     <button
                       type="button"
                       onClick={() => onLoadChat(session.id)}
                       aria-current={sessionId === session.id ? "true" : undefined}
-                      className={`flex w-full items-center gap-2.5 rounded-lg py-2 pl-3 pr-9 text-left text-sm transition-colors ${
+                      className={`flex w-full items-start gap-2.5 rounded-lg py-2 pl-3 pr-16 text-left text-sm transition-colors ${
                         sessionId === session.id
                           ? "bg-sidebar-accent text-sidebar-foreground"
                           : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
                       }`}
                     >
-                      <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
-                      <span className="truncate">{session.preview}</span>
+                      <MessageSquare className="mt-0.5 h-4 w-4 shrink-0 opacity-60" />
+                      <span className="min-w-0">
+                        <span className="block truncate">{session.label}</span>
+                        {session.snippet && (
+                          <span className="mt-0.5 line-clamp-2 block text-xs text-subtle-foreground [overflow-wrap:anywhere]">
+                            {session.snippet}
+                          </span>
+                        )}
+                      </span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteChat(session.id);
-                      }}
-                      aria-label="Delete chat"
-                      title="Delete chat"
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-subtle-foreground opacity-100 transition-opacity hover:bg-surface-3 hover:text-destructive focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startRename(session);
+                        }}
+                        aria-label="Rename chat"
+                        title="Rename chat"
+                        className="rounded-md p-1.5 text-subtle-foreground hover:bg-surface-3 hover:text-foreground"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteChat(session.id);
+                        }}
+                        aria-label="Delete chat"
+                        title="Delete chat"
+                        className="rounded-md p-1.5 text-subtle-foreground hover:bg-surface-3 hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    </>
+                    )}
                   </li>
                 ))}
               </ul>
             </>
           ) : (
             <div className="px-3 py-10 text-center">
-              <p className="text-sm text-muted-foreground">No conversations yet</p>
-              <p className="mt-1 text-xs text-subtle-foreground">Your chats will appear here</p>
+              <p className="text-sm text-muted-foreground">{searching ? "No matching chats" : "No conversations yet"}</p>
+              <p className="mt-1 text-xs text-subtle-foreground">
+                {searching ? "Try a different word, in English or Konkani" : "Your chats will appear here"}
+              </p>
             </div>
           )}
         </div>

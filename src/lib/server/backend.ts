@@ -28,15 +28,25 @@ export function backendHeaders(user: { uid: string }, extra?: HeadersInit): Head
   return headers;
 }
 
+const OFFLINE = "The backend server is offline. Start it (on Lightning or Colab) and try again.";
+
 export async function backendError(res: Response): Promise<Response> {
-  let message = "The backend returned an error.";
+  const text = await res.text().catch(() => "");
+
+  // Tunnels answer with their own HTML page when nothing is running behind them
+  // (ngrok: ERR_NGROK_3200 "endpoint is offline", 8012 "upstream refused").
+  if (/ERR_NGROK_(3200|8012|3004)/.test(text) || (res.status === 404 && /^\s*</.test(text))) {
+    return Response.json({ error: OFFLINE }, { status: 503 });
+  }
+
+  let message = `The backend returned an error (HTTP ${res.status}).`;
   try {
-    const body = await res.json();
+    const body = JSON.parse(text);
     const detail = body?.detail ?? body?.error;
     if (typeof detail === "string") message = detail;
     else if (res.status === 422) message = "The request was not valid.";
   } catch {
-    // keep the generic message
+    console.error("Unexpected backend response:", res.status, text.slice(0, 200));
   }
   return Response.json({ error: message }, { status: res.status });
 }

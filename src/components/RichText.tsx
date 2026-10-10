@@ -27,7 +27,8 @@ export function RichText({ text, lang, sourceCount = 0, onCitation, caret = fals
   const inline = (line: string, key: string) =>
     line.split(CITATION).map((part, i, parts) => {
       // "Goa [1]." -> "Goa" + marker + "." (the marker has its own spacing)
-      if (onCitation && /^\[\d{1,2}\]$/.test(parts[i + 1] ?? "")) part = part.replace(/\s+$/, "");
+      const nextId = /^\[(\d{1,2})\]$/.exec(parts[i + 1] ?? "")?.[1];
+      if (onCitation && nextId && Number(nextId) >= 1 && Number(nextId) <= sourceCount) part = part.replace(/\s+$/, "");
       const match = /^\[(\d{1,2})\]$/.exec(part);
       const id = match ? Number(match[1]) : 0;
       if (match && id >= 1 && id <= sourceCount && onCitation) {

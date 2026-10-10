@@ -629,3 +629,7 @@ Verified: tsc, ESLint (0 problems), 36 backend tests, and a headless-Edge run ag
 - Removed `/api/save-chat` (wrote to Firestore without auth), `/api/models` and `src/lib/db.ts` (unused).
 
 Verified: tsc, ESLint, production build; 18 token-verification checks (valid, expired, wrong audience/issuer, attacker key, `alg=none`, tampered payload, empty subject, future `auth_time`, allow-list lookalike domain); all four API routes return 401 without a token; sign-in screen rendered at 1366 px and 390 px. Not verified: a real Google sign-in and Firestore rules (need the Firebase console steps).
+
+### Listen (text-to-speech): explored and dropped — 2026-10-10
+
+A Konkani "Listen" feature was built on branch `listen` (AI4Bharat Indic Parler-TTS as a separate service; Lightning allows one Python environment per Studio, so it was deployed on Modal). It worked end to end, but on Modal's CPU tier it took 46–78 s per sentence and 1 of 4 samples was silent; the GPU tier needs a payment method. The feature was dropped and the branch not merged. Kept from it: a clear "backend server is offline" error (ngrok ERR_NGROK_3200 detection) and the citation-spacing fix in RichText.

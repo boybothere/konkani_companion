@@ -42,6 +42,24 @@ class SearchResult:
     errors: list[str] = field(default_factory=list)
 
 
+_MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_NOISE = re.compile(r"[#>*_`|~]+")
+_BARE_URL = re.compile(r"https?://\S+")
+
+
+def make_snippet(text: str, limit: int = 280) -> str:
+    """Short plain-text preview of a source for display (not sent to the model)."""
+    text = _MD_IMAGE.sub(" ", text)
+    text = _MD_LINK.sub(r"\1", text)
+    text = _BARE_URL.sub(" ", text)
+    text = _MD_NOISE.sub(" ", text)
+    text = " ".join(text.split())
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0] + "…"
+    return text
+
+
 def should_search(query_en: str, mode: str) -> bool:
     if mode == "never":
         return False

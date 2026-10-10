@@ -1,14 +1,16 @@
 // Client-side reader for the backend's server-sent events.
 // Buffers across network chunks, so an event split over two reads is never lost.
 
-export type Source = { id: number; title: string; url: string; provider?: string };
+export type Source = { id: number; title: string; url: string; provider?: string; snippet?: string };
 
 export type CompanionEvent =
   | { type: "delta"; text: string }
+  | { type: "englishDelta"; text: string }
   | { type: "status"; stage: string }
   | { type: "meta"; inputLanguage: string; queryEn: string }
-  | { type: "sources"; sources: Source[] }
+  | { type: "sources"; sources: Source[]; provider: string | null }
   | { type: "english"; text: string }
+  | { type: "result"; data: unknown }
   | { type: "error"; message: string }
   | { type: "done" };
 
@@ -84,10 +86,17 @@ export async function* readCompanionStream(res: Response): AsyncGenerator<Compan
         yield {
           type: "sources",
           sources: (Array.isArray(payload?.sources) ? payload.sources : []).filter((s: Source) => isHttpUrl(s?.url)),
+          provider: typeof payload?.provider === "string" ? payload.provider : null,
         };
+        break;
+      case "english_delta":
+        if (typeof payload === "string") yield { type: "englishDelta", text: payload };
         break;
       case "english":
         yield { type: "english", text: String(payload?.text ?? "") };
+        break;
+      case "result":
+        yield { type: "result", data: payload };
         break;
       case "error":
         yield { type: "error", message: String(payload?.message ?? "Something went wrong.") };
@@ -96,10 +105,17 @@ export async function* readCompanionStream(res: Response): AsyncGenerator<Compan
   }
 }
 
+// Labels for the stages the backend actually reports. "starting" and
+// "uploading" are client-side: the request is sent but no stage has arrived yet.
 export const STATUS_LABELS: Record<string, string> = {
-  starting: "Connecting…",
-  understanding: "Understanding your question…",
+  starting: "Sending your question…",
+  uploading: "Uploading your document…",
+  understanding: "Translating your question…",
   searching: "Searching the web…",
-  thinking: "Thinking…",
-  translating: "Translating to Konkani…",
+  thinking: "Generating your answer…",
+  translating: "Translating the response…",
+  extracting: "Processing your document…",
+  processing: "Processing your document…",
+  translating_document: "Translating the document…",
+  summarizing: "Preparing your summaries…",
 };

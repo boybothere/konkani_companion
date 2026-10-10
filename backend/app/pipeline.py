@@ -19,8 +19,8 @@ from typing import Any, AsyncIterator, Callable
 from . import guardrails, prompts
 from .config import Settings
 from .llm import LLM, GroqLLM, LLMError, MockLLM
-from .ocr import ExtractResult, extract_text
-from .search import SearchService, Source, should_search
+from .ocr import DocumentError, ExtractResult, extract_text
+from .search import SearchService, Source, make_snippet, should_search
 from .stt import MockSTT, SpeechToText
 from .text_utils import Segment, StreamSegmenter, detect_input_language, devanagari_ratio
 from .translator import MockTranslator, Translator, translate_segment, translate_text
@@ -129,6 +129,7 @@ async def _answer_events(
                 break
             if not item.text:
                 if emitted_any:
+                    yield Event("english_delta", item.sep)
                     yield Event("delta", item.sep)
                 continue
             if leak_guard.leaked("".join(english_parts)):
@@ -137,9 +138,14 @@ async def _answer_events(
                 refusal = await asyncio.to_thread(
                     translate_segment, services.translator, REFUSAL_EN, "en2kok"
                 )
-                yield Event("delta", ("\n\n" if emitted_any else "") + refusal)
+                prefix = "\n\n" if emitted_any else ""
+                yield Event("english_delta", prefix + REFUSAL_EN)
+                yield Event("delta", prefix + refusal)
                 english_parts[:] = [REFUSAL_EN]
                 break
+            # The English segment is ready before its translation, so clients
+            # that show both languages can display it straight away.
+            yield Event("english_delta", item.text + item.sep)
             if not emitted_any:
                 yield Event("status", {"stage": "translating"})
             konkani = await asyncio.to_thread(
@@ -156,7 +162,13 @@ async def _answer_events(
 
 def _public_sources(sources: list[Source]) -> list[dict[str, Any]]:
     return [
-        {"id": i, "title": s.title[:200], "url": s.url, "provider": s.provider}
+        {
+            "id": i,
+            "title": s.title[:200],
+            "url": s.url,
+            "provider": s.provider,
+            "snippet": make_snippet(guardrails.normalise(s.content)),
+        }
         for i, s in enumerate(sources, start=1)
     ]
 
@@ -236,30 +248,42 @@ async def document_chat_events(
     yield Event("done")
 
 
-async def analyze_document(services: Services, data: bytes) -> dict[str, Any]:
-    """OCR -> English -> summary -> Konkani summary.
+async def analyze_document_events(services: Services, data: bytes) -> AsyncIterator[Event]:
+    """OCR -> English -> summary -> Konkani summary, reporting each stage.
 
-    Returns the shape the Document Lens UI expects.
+    Emits ``status`` events as each stage starts, then one ``result`` event with
+    the shape the Document Lens UI expects, then ``done``. Unreadable files
+    produce an ``error`` event instead of a result.
     """
     settings = services.settings
-    extracted = await asyncio.to_thread(services.extractor, data, settings)
+    yield Event("status", {"stage": "extracting"})
+    try:
+        extracted = await asyncio.to_thread(services.extractor, data, settings)
+    except DocumentError as exc:
+        yield Event("error", {"message": str(exc)})
+        yield Event("done")
+        return
     text = extracted.text.strip()
     if not text:
-        return {
+        yield Event("result", {
             "ocr_text": "",
             "english_translation": "",
             "summary": "No readable text was found in this document.",
             "error": True,
-        }
+        })
+        yield Event("done")
+        return
 
     truncated = extracted.truncated or len(text) > settings.max_document_chars
     text = text[: settings.max_document_chars]
 
     if detect_input_language(text) == "kok":
+        yield Event("status", {"stage": "translating_document"})
         english = await _translate(services, text, "kok2en")
     else:
         english = text
 
+    yield Event("status", {"stage": "summarizing"})
     system_prompt = prompts.document_system_prompt(services.canary)
     messages = prompts.build_document_messages(
         system_prompt, english, prompts.SUMMARY_INSTRUCTION, settings.max_document_chars
@@ -268,17 +292,19 @@ async def analyze_document(services: Services, data: bytes) -> dict[str, Any]:
         summary_en = await services.llm.complete(messages)
     except LLMError:
         logger.exception("summary failed")
-        return {
+        yield Event("result", {
             "ocr_text": text,
             "english_translation": english,
             "summary": "The text was extracted, but the summary service failed. Please try again.",
             "error": True,
-        }
+        })
+        yield Event("done")
+        return
     if guardrails.LeakGuard(system_prompt, services.canary).leaked(summary_en):
         summary_en = REFUSAL_EN
     summary = await _translate(services, summary_en, "en2kok")
 
-    return {
+    yield Event("result", {
         "ocr_text": text,
         "english_translation": english,
         "summary": summary,
@@ -287,4 +313,18 @@ async def analyze_document(services: Services, data: bytes) -> dict[str, Any]:
         "pages": extracted.pages,
         "method": extracted.method,
         "truncated": truncated,
-    }
+    })
+    yield Event("done")
+
+
+async def analyze_document(services: Services, data: bytes) -> dict[str, Any]:
+    """Non-streaming version of ``analyze_document_events``.
+
+    Raises ``DocumentError`` for unreadable files.
+    """
+    async for event in analyze_document_events(services, data):
+        if event.type == "error":
+            raise DocumentError(event.data["message"])
+        if event.type == "result":
+            return event.data
+    raise RuntimeError("document analysis ended without a result")

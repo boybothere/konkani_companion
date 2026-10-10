@@ -1,31 +1,48 @@
 @import "tailwindcss";
 
 :root {
-  --background: #212121;
-  --foreground: #ececec;
-  --card: #2f2f2f;
-  --card-foreground: #ececec;
-  --popover: #2f2f2f;
-  --popover-foreground: #ececec;
+  /* Surfaces, darkest to lightest */
+  --background: #111214;
+  --sidebar: #0c0d0f;
+  --card: #18191c;
+  --surface-2: #1f2125;
+  --surface-3: #282b30;
+
+  /* Text */
+  --foreground: #ececee;
+  --card-foreground: #ececee;
+  --muted-foreground: #9a9ea7;
+  --subtle-foreground: #6c7079;
+
+  /* Lines */
+  --border: #26292e;
+  --border-strong: #363a41;
+
+  /* Accent (brand green) */
   --primary: #10a37f;
   --primary-foreground: #ffffff;
-  --secondary: #424242;
-  --secondary-foreground: #b4b4b4;
-  --muted: #2f2f2f;
-  --muted-foreground: #8e8e8e;
-  --accent: #10a37f;
-  --accent-foreground: #ffffff;
-  --destructive: #ef4444;
+  --accent: #3ecf9e;
+  --accent-foreground: #04120d;
+  --ring: #3ecf9e;
+
+  --destructive: #f87171;
   --destructive-foreground: #fafafa;
-  --border: #424242;
-  --input: #424242;
-  --ring: #10a37f;
-  --sidebar: #171717;
-  --sidebar-foreground: #ececec;
-  --sidebar-border: #2f2f2f;
-  --sidebar-accent: #2f2f2f;
-  --sidebar-accent-foreground: #ececec;
+
+  /* Kept for existing components */
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --secondary: var(--surface-3);
+  --secondary-foreground: #b4b4b8;
+  --muted: var(--surface-2);
+  --input: var(--border-strong);
+  --sidebar-foreground: #e4e4e7;
+  --sidebar-border: #1f2125;
+  --sidebar-accent: #1c1e22;
+  --sidebar-accent-foreground: #ececee;
   --radius: 0.75rem;
+
+  /* Devanagari font stack; --font-noto-devanagari comes from next/font in layout.tsx */
+  --font-dev-stack: var(--font-noto-devanagari), "Nirmala UI", "Kohinoor Devanagari", "Mangal", sans-serif;
 }
 
 @theme inline {
@@ -33,6 +50,8 @@
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
@@ -41,11 +60,13 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-sidebar: var(--sidebar);
@@ -53,63 +74,128 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Latin glyphs come from Inter; Devanagari glyphs fall through to Noto Sans Devanagari */
+  --font-sans: var(--font-geist-sans), var(--font-dev-stack), system-ui, sans-serif;
+  --font-devanagari: var(--font-dev-stack);
 }
 
-* {
-  border-color: var(--border);
+/* Base styles live in a cascade layer so Tailwind utilities (border colours,
+   outlines, fonts) can still override them. */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body {
+    height: 100%;
+    overflow: hidden; /* the app scrolls inside its panes, never the page */
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-geist-sans), var(--font-dev-stack), system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  /* Long words, URLs and Devanagari compounds wrap instead of overflowing */
+  .prose-answer {
+    overflow-wrap: anywhere;
+    word-break: normal;
+    line-height: 1.75;
+  }
+
+  /* Devanagari needs a little more line height for matras and conjuncts */
+  :lang(kok),
+  :lang(gom),
+  .devanagari {
+    font-family: var(--font-dev-stack);
+    line-height: 1.85;
+  }
+
+  /* Scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #4a4f57;
+  }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans), system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-/* Custom scrollbar for dark mode */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #565656;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #6e6e6e;
-}
-
-/* Smooth transitions */
+/* Sidebar width/opacity transition */
 .transition-sidebar {
-  transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1), 
-              opacity 150ms cubic-bezier(0.4, 0, 0.2, 1),
-              transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    width 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 150ms cubic-bezier(0.4, 0, 0.2, 1),
+    transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Typing animation for AI responses */
-@keyframes pulse-subtle {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+@layer components {
+  /* Height animation without measuring: grid rows 0fr -> 1fr */
+  .collapsible {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .collapsible[data-open="true"] {
+    grid-template-rows: 1fr;
+  }
+
+  .collapsible > * {
+    overflow: hidden;
+    min-height: 0;
+  }
 }
 
-.animate-pulse-subtle {
-  animation: pulse-subtle 1.5s ease-in-out infinite;
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-/* Message fade in */
+.animate-fade-in {
+  animation: fade-in 220ms ease-out both;
+}
+
 @keyframes fade-up {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -118,5 +204,36 @@ body {
 }
 
 .animate-fade-up {
-  animation: fade-up 0.3s ease-out forwards;
+  animation: fade-up 260ms ease-out both;
+}
+
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.streaming-caret {
+  display: inline-block;
+  width: 0.5em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: caret-blink 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
 }

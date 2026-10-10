@@ -610,3 +610,13 @@ Verification: 32 backend tests pass (mock models); real PDF/PNG OCR path smoke-t
 - Phase 3: Tauri desktop app.
 - F-15 evaluation sets (translation chrF++, speech CER/WER, retrieval faithfulness, latency baseline).
 - Pre-existing lint error in `ChatInput.tsx` (`setState` in effect) and dead code (`/api/models`, `src/lib/db.ts`).
+
+### UX/UI update — 2026-10-10 (not yet committed)
+
+Frontend: collapsible "Sources & Search Results" panel above each answer (collapsed by default, with snippets, clickable `[n]` citation markers); bilingual Konkani/English document summaries and summary answers (side by side on md+, stacked on mobile); stage-accurate status indicator with elapsed time; Stop for chat and document Q&A, Cancel for document analysis; scroll follows the stream only when the reader is at the bottom; responsive sidebar (overlay on phones); refined dark theme with self-hosted Noto Sans Devanagari; client-side upload validation; microphone released after recording.
+
+Backend (additive, old clients unaffected): `snippet` on each source; `english_delta` events mirroring each translated segment (no extra model calls); `POST /analyze-document/stream` with stage events (the old endpoint is unchanged and used as a fallback).
+
+Also fixed: global CSS rules were outside Tailwind's cascade layers, so they silently overrode all border-colour and outline utilities (pre-existing for `* { border-color }`).
+
+Verified: tsc, ESLint (0 problems), 36 backend tests, and a headless-Edge run against a delayed mock backend at 1366 px, 820 px and 390 px (stage order, collapsed panel, Stop, invalid upload, bilingual layout, no horizontal overflow, no console errors). Not verified against the real Colab models.

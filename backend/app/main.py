@@ -5,6 +5,7 @@ Endpoints
     POST /transcribe                   audio -> Devanagari text
     POST /openai/v1/chat/completions   chat, streamed as server-sent events
     POST /analyze-document             PDF/image -> OCR text, English, Konkani summary
+    POST /analyze-document/stream      same, with stage events and a final ``result`` event
     POST /document-chat                question about a document, streamed
 
 SSE format
@@ -38,6 +39,7 @@ from .pipeline import (
     IncomingMessage,
     Services,
     analyze_document,
+    analyze_document_events,
     build_services,
     chat_events,
     document_chat_events,
@@ -183,18 +185,29 @@ def create_app(services: Services | None = None, settings: Settings | None = Non
         messages = [IncomingMessage(m.role, m.content, m.english) for m in body.messages]
         return _streaming(chat_events(svc, messages, body.language))
 
-    @app.post("/analyze-document", dependencies=[Depends(guard)])
-    async def analyze(file: UploadFile = File(...), svc: Services = Depends(get_services)) -> dict:
+    async def read_document(file: UploadFile) -> bytes:
         data = await security.read_limited(file, settings.max_document_bytes)
         if detect_kind(data) is None:
             raise HTTPException(
                 status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 "Unsupported file type. Upload a PDF, PNG, JPEG, WEBP or TIFF file.",
             )
+        return data
+
+    @app.post("/analyze-document", dependencies=[Depends(guard)])
+    async def analyze(file: UploadFile = File(...), svc: Services = Depends(get_services)) -> dict:
+        data = await read_document(file)
         try:
             return await analyze_document(svc, data)
         except DocumentError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    @app.post("/analyze-document/stream", dependencies=[Depends(guard)])
+    async def analyze_stream(file: UploadFile = File(...), svc: Services = Depends(get_services)) -> StreamingResponse:
+        """Same as /analyze-document, but reports progress as SSE ``status`` events
+        and delivers the result as a ``result`` event."""
+        data = await read_document(file)
+        return _streaming(analyze_document_events(svc, data))
 
     @app.post("/document-chat", dependencies=[Depends(guard)])
     async def document_chat(body: DocumentChatRequest, svc: Services = Depends(get_services)) -> StreamingResponse:

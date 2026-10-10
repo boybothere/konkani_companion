@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import { useState } from "react";
 
 const ROWS = [
     { label: "स्वर", chars: ["अ", "आ", "इ", "ई", "उ", "ऊ", "ए", "ऐ", "ओ", "औ", "अं", "अः"] },
@@ -10,18 +10,6 @@ const ROWS = [
     { label: "प–ह", chars: ["प", "फ", "ब", "भ", "म", "य", "र", "ल", "व", "श", "ष", "स", "ह"] },
     { label: "विशेष", chars: ["ळ", "क्ष", "ज्ञ", "त्र", "श्र", "ँ", "ऱ", "।", "॥", "ॐ"] },
 ];
-
-// System font stack that guarantees Devanagari rendering on every OS
-// Windows: Mangal / Nirmala UI
-// macOS/iOS: Kohinoor Devanagari / ITF Devanagari
-// Android: Noto Sans Devanagari (built-in)
-// Linux: Lohit Devanagari
-const DEV_FONT: React.CSSProperties = {
-    fontFamily:
-        "'Kohinoor Devanagari', 'Nirmala UI', 'Mangal', 'Noto Sans Devanagari', " +
-        "'ITF Devanagari', 'Lohit Devanagari', Arial Unicode MS, sans-serif",
-    fontWeight: 600,
-};
 
 interface Props {
     onInsert: (char: string) => void;
@@ -47,100 +35,90 @@ export default function KonkaniKeyboard({ onInsert, onBackspace, onEnter }: Prop
         <div className="w-full">
             {/* Trigger */}
             <button
+                type="button"
                 onClick={() => setIsOpen(v => !v)}
-                className={`
-          inline-flex items-center gap-2 h-7 px-3 mb-2 rounded-md text-xs font-medium
-          border transition-all select-none
-          ${isOpen
-                        ? "bg-amber-500/15 border-amber-500/50 text-amber-300"
-                        : "bg-transparent border-gray-600 text-gray-500 hover:text-amber-300 hover:border-amber-500/40"
-                    }
-        `}
+                aria-expanded={isOpen}
+                className={`mb-2 inline-flex h-7 select-none items-center gap-2 rounded-lg border px-2.5 text-xs font-medium transition-colors ${isOpen
+                    ? "border-accent/40 bg-accent/10 text-accent"
+                    : "border-border text-muted-foreground hover:border-border-strong hover:text-foreground"
+                    }`}
             >
-                <span style={{ ...DEV_FONT, fontSize: 16 }}>क</span>
-                <span>Konkani keyboard {isOpen ? "▲" : "▼"}</span>
+                <span lang="kok" className="devanagari text-[15px] leading-none">क</span>
+                <span>Konkani keyboard</span>
+                <span className={`text-[10px] transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}>▼</span>
             </button>
 
-            {isOpen && (
-                <div className="w-full mb-3 bg-[#1a1a1a] border border-gray-700/60 rounded-2xl overflow-hidden">
+            <div className="collapsible" data-open={isOpen}>
+                <div inert={!isOpen}>
+                    <div className="mb-3 w-full overflow-hidden rounded-2xl border border-border bg-card">
 
-                    {/* Category tabs */}
-                    <div className="flex border-b border-gray-700/50 bg-[#141414] overflow-x-auto">
-                        {ROWS.map((row, i) => (
+                        {/* Category tabs */}
+                        <div className="flex overflow-x-auto border-b border-border">
+                            {ROWS.map((row, i) => (
+                                <button
+                                    key={i}
+                                    type="button"
+                                    onClick={() => setActiveTab(i)}
+                                    lang="kok"
+                                    className={`devanagari shrink-0 whitespace-nowrap border-b-2 px-4 py-2 text-[13px] transition-colors ${activeTab === i
+                                        ? "border-accent text-foreground"
+                                        : "border-transparent text-subtle-foreground hover:text-muted-foreground"
+                                        }`}
+                                >
+                                    {row.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Character grid */}
+                        <div className="grid grid-cols-[repeat(auto-fill,minmax(48px,1fr))] gap-2 p-3 sm:grid-cols-[repeat(auto-fill,minmax(54px,1fr))]">
+                            {ROWS[activeTab].chars.map(char => (
+                                <button
+                                    key={char}
+                                    type="button"
+                                    onClick={() => fire(char)}
+                                    lang="kok"
+                                    className={`devanagari h-12 select-none rounded-xl border text-[21px] leading-none transition-colors duration-75 active:scale-95 sm:h-[52px] ${flash === char
+                                        ? "border-accent bg-accent/20 text-foreground"
+                                        : "border-border-strong bg-surface-2 text-foreground hover:bg-surface-3"
+                                        }`}
+                                >
+                                    {char}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Action row */}
+                        <div className="flex gap-2 px-3 pb-3">
                             <button
-                                key={i}
-                                onClick={() => setActiveTab(i)}
-                                style={{ ...DEV_FONT, fontSize: 13 }}
-                                className={`
-                  flex-shrink-0 px-4 py-2.5 transition-colors whitespace-nowrap
-                  ${activeTab === i
-                                        ? "text-amber-300 border-b-2 border-amber-400 bg-[#1a1a1a]"
-                                        : "text-gray-500 hover:text-gray-300"
-                                    }
-                `}
+                                type="button"
+                                onClick={() => fire("⌫")}
+                                className="h-10 flex-1 rounded-xl border border-border-strong bg-surface-2 text-sm text-muted-foreground transition-colors hover:border-destructive/40 hover:text-destructive"
                             >
-                                {row.label}
+                                ⌫ Delete
                             </button>
-                        ))}
-                    </div>
-
-                    {/* Character grid */}
-                    <div
-                        className="p-4"
-                        style={{
-                            display: "grid",
-                            gridTemplateColumns: "repeat(auto-fill, minmax(56px, 1fr))",
-                            gap: "10px",
-                        }}
-                    >
-                        {ROWS[activeTab].chars.map(char => (
                             <button
-                                key={char}
-                                onClick={() => fire(char)}
-                                style={{
-                                    ...DEV_FONT,
-                                    fontSize: 22,
-                                    lineHeight: 1,
-                                    color: flash === char ? "#000" : "#111827",
-                                    backgroundColor: flash === char ? "#fbbf24" : "#ffffff",
-                                }}
-                                className="h-14 rounded-xl select-none transition-all duration-75 active:scale-95 hover:brightness-95"
+                                type="button"
+                                onClick={() => fire("SP")}
+                                className="h-10 flex-[2.5] rounded-xl border border-border-strong bg-surface-2 text-sm text-muted-foreground transition-colors hover:bg-surface-3"
                             >
-                                {char}
+                                Space
                             </button>
-                        ))}
-                    </div>
+                            <button
+                                type="button"
+                                onClick={() => fire("↵")}
+                                className="h-10 flex-1 rounded-xl bg-foreground text-sm font-medium text-background transition-opacity hover:opacity-90"
+                            >
+                                Send ↵
+                            </button>
+                        </div>
 
-                    {/* Action row */}
-                    <div className="flex gap-2.5 px-4 pb-4">
-                        <button
-                            onClick={() => fire("⌫")}
-                            className="flex-1 h-11 rounded-xl text-sm font-medium bg-[#2a2a2a] text-gray-300 border border-gray-700 hover:bg-red-950/60 hover:text-red-300 hover:border-red-800 transition-colors"
-                        >
-                            ⌫ Delete
-                        </button>
-                        <button
-                            onClick={() => fire("SP")}
-                            className="flex-[2.5] h-11 rounded-xl text-sm font-medium bg-[#2a2a2a] text-gray-300 border border-gray-700 hover:bg-[#333] transition-colors"
-                        >
-                            Space
-                        </button>
-                        <button
-                            onClick={() => fire("↵")}
-                            className="flex-1 h-11 rounded-xl text-sm font-semibold bg-amber-500 text-black hover:bg-amber-400 transition-colors"
-                        >
-                            Send ↵
-                        </button>
+                        <p lang="kok" className="devanagari pb-2.5 text-center text-xs text-subtle-foreground">
+                            क + ा = का &nbsp;·&nbsp; consonant first, then मात्रा tab
+                        </p>
                     </div>
-
-                    <p
-                        className="text-center pb-3 text-gray-500"
-                        style={{ ...DEV_FONT, fontSize: 12 }}
-                    >
-                        क + ा = का &nbsp;·&nbsp; consonant first, then मात्रा tab
-                    </p>
                 </div>
-            )}
+            </div>
         </div>
     );
 }

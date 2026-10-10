@@ -144,6 +144,63 @@ def test_analyze_document_returns_ui_shape(services):
     assert body["summary"].startswith("[KOK]")
 
 
+def test_sources_include_display_snippets(services):
+    from app.search import Source
+
+    services.search.sources = [
+        Source("Goa", "https://example.org/goa", "# Heading\n![img](x.png) Panaji is the [capital](https://x.org) of Goa.", "fake")
+    ]
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions", json={"messages": [{"role": "user", "content": "Capital of Goa?"}]}
+        )
+    sources = next(d for n, d in parse_sse(r.text) if n == "sources")["sources"]
+    assert sources[0]["snippet"] == "Heading Panaji is the capital of Goa."
+
+
+def test_english_deltas_mirror_the_konkani_stream(services):
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions", json={"messages": [{"role": "user", "content": "Capital of Goa?"}]}
+        )
+    events = parse_sse(r.text)
+    english = "".join(d for n, d in events if n == "english_delta")
+    full = next(d for n, d in events if n == "english")["text"]
+    assert english.strip() == full
+    # the first English segment arrives before the first translated text
+    first_english = next(i for i, (n, _) in enumerate(events) if n == "english_delta")
+    first_konkani = next(
+        i for i, (n, d) in enumerate(events) if n == "message" and d != "[DONE]" and d["choices"][0]["delta"].get("content")
+    )
+    assert first_english < first_konkani
+
+
+def test_analyze_document_stream_reports_stages_then_result(services):
+    with client_for(services) as client:
+        r = client.post("/analyze-document/stream", files={"file": ("d.pdf", b"%PDF-1.7 fake", "application/pdf")})
+    events = parse_sse(r.text)
+    stages = [d["stage"] for n, d in events if n == "status"]
+    assert stages == ["extracting", "translating_document", "summarizing"]
+    result = next(d for n, d in events if n == "result")
+    assert result["error"] is False and result["summary_english"] and result["summary"].startswith("[KOK]")
+    assert events[-1][1] == "[DONE]"
+
+
+def test_analyze_document_stream_reports_unreadable_files(services):
+    from app.ocr import DocumentError
+
+    def broken(data, settings):
+        raise DocumentError("Could not open the PDF.")
+
+    services.extractor = broken
+    with client_for(services) as client:
+        r = client.post("/analyze-document/stream", files={"file": ("d.pdf", b"%PDF-1.7 fake", "application/pdf")})
+        plain = client.post("/analyze-document", files={"file": ("d.pdf", b"%PDF-1.7 fake", "application/pdf")})
+    error = next(d for n, d in parse_sse(r.text) if n == "error")
+    assert error["message"] == "Could not open the PDF."
+    assert plain.status_code == 400
+
+
 def test_analyze_document_rejects_unknown_type(services):
     with client_for(services) as client:
         r = client.post("/analyze-document", files={"file": ("d.exe", b"MZ\x90\x00", "application/pdf")})

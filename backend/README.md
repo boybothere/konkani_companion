@@ -75,6 +75,11 @@ Answer text is sent as OpenAI-style `chat.completion.chunk` objects
 lists, run cells 1–5. Put the printed URL in the frontend's `.env.local` as
 `BACKEND_URL`, and the same `BACKEND_API_KEY` value.
 
+**Any GPU machine (Lightning AI, a cloud VM):** put your keys in
+`backend/.env` (copy `.env.example`), then run `python -m app.serve` from
+`backend/` (add `--ngrok` for a public URL). For Lightning AI step by step,
+see [`deploy/lightning/README.md`](../deploy/lightning/README.md).
+
 **Without a GPU (UI development):**
 
 ```bash

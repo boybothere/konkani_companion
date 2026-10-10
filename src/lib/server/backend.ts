@@ -47,7 +47,7 @@ export function backendUnavailable(error: unknown): Response {
   console.error("Backend request failed:", error);
   const message =
     error instanceof BackendNotConfigured
-      ? "The backend URL is not configured. Set BACKEND_URL in .env.local."
-      : "The backend is unreachable. Is the Colab server running?";
+      ? "The backend URL is not configured. Set BACKEND_URL (in .env.local locally, or in your hosting provider's environment variables)."
+      : "The backend is unreachable. Make sure the backend server is running.";
   return Response.json({ error: message }, { status: 503 });
 }

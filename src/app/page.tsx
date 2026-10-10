@@ -7,6 +7,11 @@ import ChatInput from "@/components/ChatInput";
 import { Sidebar } from "@/components/Sidebar";
 import DocumentTab from "@/components/DocumentTab";
 import { readCompanionStream } from "@/lib/sse";
+import type { User } from "firebase/auth";
+import { AuthProvider, useAuth } from "@/components/auth/AuthProvider";
+import { SignInScreen, SplashScreen } from "@/components/auth/SignInScreen";
+import { authFetch } from "@/lib/authFetch";
+import * as chatStore from "@/lib/chatStore";
 
 const isDesktop = () => window.matchMedia("(min-width: 768px)").matches;
 const isAbort = (error: unknown) => (error as Error)?.name === "AbortError";
@@ -15,7 +20,10 @@ const isAbort = (error: unknown) => (error as Error)?.name === "AbortError";
 const normalise = (messages: Message[]): Message[] =>
   messages.map((m) => (typeof m.error === "string" ? m : { ...m, error: undefined }));
 
-export default function Home() {
+const newSessionId = () => Date.now().toString();
+
+function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
+  const uid = user.uid;
   const [activeTab, setActiveTab] = useState<Tab>("chat");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -24,47 +32,50 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   // Incremented on every send and session switch; stale streams stop writing.
   const runRef = useRef(0);
+  // Last version written to Firestore per chat, to skip redundant writes.
+  const savedRef = useRef<Record<string, string>>({});
 
   const [desktopSidebar, setDesktopSidebar] = useState(true);
   const [mobileSidebar, setMobileSidebar] = useState(false);
-  const [sessionsList, setSessionsList] = useState<{ id: string, preview: string }[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState("default-session");
+  const [sessionsList, setSessionsList] = useState<chatStore.SessionSummary[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState(newSessionId);
 
-  const syncSidebarFromStorage = () => {
-    const sessions = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith("chat_")) {
-        const id = key.replace("chat_", "");
-        const chatData = JSON.parse(localStorage.getItem(key) || "[]");
-        if (chatData.length > 0) {
-          sessions.push({
-            id,
-            preview: chatData[0].content.substring(0, 40),
-          });
-        }
-      }
-    }
-    sessions.sort((a, b) => Number(b.id) - Number(a.id));
-    setSessionsList(sessions);
-  };
+  const syncSidebarFromStorage = () => setSessionsList(chatStore.listLocal(uid));
 
+  // On sign-in: adopt chats saved before accounts existed, then pull this
+  // user's history from Firestore (other devices) into the local cache.
   useEffect(() => {
-    const saved = localStorage.getItem(`chat_${currentSessionId}`);
-    if (saved) {
-      setMessages(normalise(JSON.parse(saved)));
-    } else {
-      setMessages([]);
-    }
+    const moved = chatStore.migrateLegacy(uid);
     syncSidebarFromStorage();
-  }, [currentSessionId]);
+    moved.forEach((id) => {
+      const legacy = chatStore.loadLocal(uid, id);
+      if (legacy) chatStore.saveRemote(uid, id, legacy).catch(() => {});
+    });
+    chatStore
+      .syncFromRemote(uid)
+      .then(syncSidebarFromStorage)
+      .catch((err) => console.warn("Couldn't load chat history from the cloud:", err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid]);
 
   useEffect(() => {
-    if (messages.length > 0) {
-      localStorage.setItem(`chat_${currentSessionId}`, JSON.stringify(messages));
-      syncSidebarFromStorage();
-    }
-  }, [messages, currentSessionId]);
+    setMessages(normalise(chatStore.loadLocal(uid, currentSessionId) ?? []));
+    syncSidebarFromStorage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, currentSessionId]);
+
+  useEffect(() => {
+    if (messages.length === 0) return;
+    chatStore.saveLocal(uid, currentSessionId, messages);
+    syncSidebarFromStorage();
+    // Save to Firestore once an answer has finished, not on every streamed chunk.
+    if (isLoading) return;
+    const snapshot = JSON.stringify(messages);
+    if (savedRef.current[currentSessionId] === snapshot) return;
+    savedRef.current[currentSessionId] = snapshot;
+    chatStore.saveRemote(uid, currentSessionId, messages).catch((err) => console.warn("Cloud save failed:", err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, currentSessionId, isLoading, uid]);
 
   // Patch the last message (the assistant reply being streamed).
   const updateLast = (patch: Partial<Message> | ((m: Message) => Partial<Message>)) =>
@@ -95,15 +106,9 @@ export default function Home() {
     const current = () => runRef.current === run;
     const patch: typeof updateLast = (p) => { if (current()) updateLast(p); };
 
-    fetch("/api/save-chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: currentSessionId, messages: history })
-    }).catch(err => console.warn("Firebase save pending:", err));
-
     let answer = "";
     try {
-      const res = await fetch("/api/chat", {
+      const res = await authFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -155,14 +160,6 @@ export default function Home() {
         patch((m) => ({ error: m.error ?? "The connection closed before the answer finished. Please try again." }));
       }
 
-      if (current()) fetch("/api/save-chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: currentSessionId,
-          messages: [...history, { role: "assistant", content: answer }]
-        })
-      }).catch(() => { });
 
     } catch (error) {
       if (isAbort(error)) {
@@ -190,7 +187,7 @@ export default function Home() {
   const handleAudioSubmit = async (audioBlob: Blob): Promise<string> => {
     const formData = new FormData();
     formData.append("file", audioBlob, "audio.webm");
-    const res = await fetch("/api/transcribe", { method: "POST", body: formData });
+    const res = await authFetch("/api/transcribe", { method: "POST", body: formData });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Transcription failed. Please try again.");
     return typeof data.text === "string" ? data.text : "";
@@ -208,7 +205,7 @@ export default function Home() {
   };
 
   const handleNewChat = () => {
-    switchSession(Date.now().toString());
+    switchSession(newSessionId());
     setMessages([]);
   };
 
@@ -230,10 +227,18 @@ export default function Home() {
         onClose={closeSidebar}
         sessionId={currentSessionId}
         sessionsList={sessionsList}
+        account={{ name: user.displayName, email: user.email, photoURL: user.photoURL }}
+        onSignOut={() => {
+          runRef.current++;
+          abortRef.current?.abort();
+          chatStore.clearLocal(uid);
+          onSignOut();
+        }}
         onNewChat={handleNewChat}
         onLoadChat={switchSession}
         onDeleteChat={(id) => {
-          localStorage.removeItem(`chat_${id}`);
+          chatStore.removeLocal(uid, id);
+          chatStore.deleteRemote(uid, id).catch((err) => console.warn("Cloud delete failed:", err));
           if (id === currentSessionId) {
             handleNewChat();
           } else {
@@ -269,5 +274,21 @@ export default function Home() {
         </div>
       </main>
     </div>
+  );
+}
+
+function Gate() {
+  const { user, loading, signOut } = useAuth();
+  if (loading) return <SplashScreen />;
+  if (!user) return <SignInScreen />;
+  // key: a different account gets a completely fresh app state
+  return <ChatApp key={user.uid} user={user} onSignOut={signOut} />;
+}
+
+export default function Home() {
+  return (
+    <AuthProvider>
+      <Gate />
+    </AuthProvider>
   );
 }

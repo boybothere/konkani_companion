@@ -5,6 +5,7 @@ import {
     Upload, FileText, X, AlertCircle, ChevronDown, Copy, Check, ArrowUp, Square, RotateCcw, MessageSquare,
 } from "lucide-react";
 import { readCompanionStream } from "@/lib/sse";
+import { authFetch } from "@/lib/authFetch";
 import { RichText } from "./RichText";
 import { StatusIndicator } from "./ui/StatusIndicator";
 
@@ -183,12 +184,12 @@ export default function DocumentTab() {
 
         try {
             let data: unknown = null;
-            const res = await fetch("/api/analyze-document?stream=1", { method: "POST", body: formData, signal: controller.signal });
+            const res = await authFetch("/api/analyze-document?stream=1", { method: "POST", body: formData, signal: controller.signal });
 
             if (res.status === 404) {
                 // Older backend without stage reporting: one honest "processing" state.
                 setStage("processing");
-                const plain = await fetch("/api/analyze-document", { method: "POST", body: formData, signal: controller.signal });
+                const plain = await authFetch("/api/analyze-document", { method: "POST", body: formData, signal: controller.signal });
                 data = await plain.json().catch(() => ({}));
                 if (!plain.ok) throw new Error((data as { error?: string }).error || "Failed to analyze the document.");
             } else if (!res.ok || !res.body) {
@@ -245,7 +246,7 @@ export default function DocumentTab() {
         let answer = "";
         let english = "";
         try {
-            const res = await fetch("/api/document-chat", {
+            const res = await authFetch("/api/document-chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ question: q, document_context: result.english_translation }),

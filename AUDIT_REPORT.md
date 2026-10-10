@@ -620,3 +620,12 @@ Backend (additive, old clients unaffected): `snippet` on each source; `english_d
 Also fixed: global CSS rules were outside Tailwind's cascade layers, so they silently overrode all border-colour and outline utilities (pre-existing for `* { border-color }`).
 
 Verified: tsc, ESLint (0 problems), 36 backend tests, and a headless-Edge run against a delayed mock backend at 1366 px, 820 px and 390 px (stage order, collapsed panel, Stop, invalid upload, bilingual layout, no horizontal overflow, no console errors). Not verified against the real Colab models.
+
+### Google sign-in — 2026-10-10 (branch `auth`, not yet committed)
+
+- Firebase Auth with Google on the client; every API route verifies the Firebase ID token (`src/lib/server/auth.ts`, `jose` + Google's public keys, no service-account secret). Optional `AUTH_ALLOWED_EMAILS` allow-list.
+- Backend calls carry `X-Client-Id: user:<uid>`, so the backend's rate limit is per user. Backend code unchanged.
+- Chat history is private per user: `users/{uid}/chats/{id}` in Firestore (rules in `firestore.rules`) with a per-user localStorage cache; pre-auth `chat_*` entries migrate to the first account that signs in on that browser. Fixes F-14 (shared `default-session` document).
+- Removed `/api/save-chat` (wrote to Firestore without auth), `/api/models` and `src/lib/db.ts` (unused).
+
+Verified: tsc, ESLint, production build; 18 token-verification checks (valid, expired, wrong audience/issuer, attacker key, `alg=none`, tampered payload, empty subject, future `auth_time`, allow-list lookalike domain); all four API routes return 401 without a token; sign-in screen rendered at 1366 px and 390 px. Not verified: a real Google sign-in and Firestore rules (need the Firebase console steps).

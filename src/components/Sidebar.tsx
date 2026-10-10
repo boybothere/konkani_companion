@@ -1,6 +1,6 @@
 "use client";
 
-import { PanelLeftClose, Plus, MessageSquare, Trash2 } from "lucide-react";
+import { PanelLeftClose, Plus, MessageSquare, Trash2, LogOut } from "lucide-react";
 
 type Session = {
   id: string;
@@ -18,6 +18,8 @@ interface SidebarProps {
   onNewChat: () => void;
   onLoadChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
+  account: { name: string | null; email: string | null; photoURL: string | null };
+  onSignOut: () => void;
 }
 
 export function Sidebar({
@@ -29,7 +31,11 @@ export function Sidebar({
   onNewChat,
   onLoadChat,
   onDeleteChat,
+  account,
+  onSignOut,
 }: SidebarProps) {
+  const initial = (account.name || account.email || "?").trim().charAt(0).toUpperCase();
+
   return (
     <>
       <aside
@@ -105,6 +111,30 @@ export function Sidebar({
               <p className="mt-1 text-xs text-subtle-foreground">Your chats will appear here</p>
             </div>
           )}
+        </div>
+
+        <div className="flex items-center gap-2.5 border-t border-sidebar-border px-3 py-3">
+          {account.photoURL ? (
+            // eslint-disable-next-line @next/next/no-img-element -- Google profile photo
+            <img src={account.photoURL} alt="" referrerPolicy="no-referrer" className="h-8 w-8 shrink-0 rounded-full" />
+          ) : (
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-3 text-sm font-medium text-foreground">
+              {initial}
+            </span>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm text-sidebar-foreground">{account.name || "Signed in"}</p>
+            {account.email && <p className="truncate text-xs text-subtle-foreground">{account.email}</p>}
+          </div>
+          <button
+            type="button"
+            onClick={onSignOut}
+            title="Sign out"
+            aria-label="Sign out"
+            className="rounded-lg p-2 text-subtle-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
         </div>
       </aside>
 

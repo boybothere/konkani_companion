@@ -1,6 +1,10 @@
 import { backendError, backendHeaders, backendUnavailable, backendUrl } from "@/lib/server/backend";
+import { requireUser } from "@/lib/server/auth";
 
 export async function POST(req: Request) {
+  const user = await requireUser(req);
+  if (user instanceof Response) return user;
+
   let file: FormDataEntryValue | null;
   try {
     file = (await req.formData()).get("file");
@@ -17,7 +21,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(backendUrl("/transcribe"), {
       method: "POST",
-      headers: backendHeaders(req),
+      headers: backendHeaders(user),
       body: form,
     });
     if (!res.ok) return backendError(res);

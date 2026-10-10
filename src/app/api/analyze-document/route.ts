@@ -1,4 +1,5 @@
 import { SSE_HEADERS, backendError, backendHeaders, backendUnavailable, backendUrl } from "@/lib/server/backend";
+import { requireUser } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -7,6 +8,9 @@ export const dynamic = "force-dynamic";
 //   Returns 404 if the backend doesn't have the streaming endpoint yet; the
 //   client then falls back to the JSON version.
 export async function POST(req: Request) {
+  const user = await requireUser(req);
+  if (user instanceof Response) return user;
+
   const stream = new URL(req.url).searchParams.get("stream") === "1";
 
   let file: FormDataEntryValue | null;
@@ -25,7 +29,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(backendUrl(stream ? "/analyze-document/stream" : "/analyze-document"), {
       method: "POST",
-      headers: backendHeaders(req),
+      headers: backendHeaders(user),
       body: form,
       signal: req.signal,
     });

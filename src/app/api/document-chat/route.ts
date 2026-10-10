@@ -1,8 +1,12 @@
 import { SSE_HEADERS, backendError, backendHeaders, backendUnavailable, backendUrl } from "@/lib/server/backend";
+import { requireUser } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const user = await requireUser(req);
+  if (user instanceof Response) return user;
+
   let body: { question?: unknown; document_context?: unknown };
   try {
     body = await req.json();
@@ -16,7 +20,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(backendUrl("/document-chat"), {
       method: "POST",
-      headers: backendHeaders(req, { "Content-Type": "application/json" }),
+      headers: backendHeaders(user, { "Content-Type": "application/json" }),
       body: JSON.stringify({ question: body.question, document_context: body.document_context }),
       signal: req.signal,
     });

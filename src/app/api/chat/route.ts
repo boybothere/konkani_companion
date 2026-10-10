@@ -1,8 +1,12 @@
 import { SSE_HEADERS, backendError, backendHeaders, backendUnavailable, backendUrl } from "@/lib/server/backend";
+import { requireUser } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const user = await requireUser(req);
+  if (user instanceof Response) return user;
+
   let body: { messages?: unknown; language?: unknown };
   try {
     body = await req.json();
@@ -17,7 +21,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(backendUrl("/openai/v1/chat/completions"), {
       method: "POST",
-      headers: backendHeaders(req, { "Content-Type": "application/json" }),
+      headers: backendHeaders(user, { "Content-Type": "application/json" }),
       body: JSON.stringify({
         messages: body.messages,
         language: body.language === "kok" ? "kok" : "en",

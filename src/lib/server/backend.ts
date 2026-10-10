@@ -17,12 +17,13 @@ export function backendUrl(path: string): string {
   return `${base}${path}`;
 }
 
-export function backendHeaders(req: Request, extra?: HeadersInit): Headers {
+/** Headers for a backend call made on behalf of a signed-in user. */
+export function backendHeaders(user: { uid: string }, extra?: HeadersInit): Headers {
   const headers = new Headers(extra);
   const apiKey = process.env.BACKEND_API_KEY;
   if (apiKey) headers.set("X-API-Key", apiKey);
-  const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip");
-  if (clientIp) headers.set("X-Client-Id", clientIp);
+  // The backend rate-limits per client id, so limits now apply per user.
+  headers.set("X-Client-Id", `user:${user.uid}`);
   headers.set("ngrok-skip-browser-warning", "true");
   return headers;
 }

@@ -1,42 +1,29 @@
-import { NextResponse } from "next/server";
+import { backendError, backendHeaders, backendUnavailable, backendUrl } from "@/lib/server/backend";
 
-export async function POST(request: Request) {
+export async function POST(req: Request) {
+  let file: FormDataEntryValue | null;
   try {
-    // 1. Extract the audio blob from the frontend
-    const formData = await request.formData();
-    const file = formData.get("file") as File;
+    file = (await req.formData()).get("file");
+  } catch {
+    return Response.json({ error: "Expected multipart form data." }, { status: 400 });
+  }
+  if (!(file instanceof Blob) || file.size === 0) {
+    return Response.json({ error: "No audio file provided." }, { status: 400 });
+  }
 
-    if (!file) {
-      return NextResponse.json({ error: "No audio file provided" }, { status: 400 });
-    }
+  const form = new FormData();
+  form.append("file", file, "audio.webm");
 
-    // 2. Prepare the payload for your Colab Backend
-    // We send it as a fresh FormData object
-    const colabFormData = new FormData();
-    colabFormData.append("file", file);
-
-    // ⚠️ REPLACE WITH YOUR CURRENT NGROK URL ⚠️
-    // Note: We are hitting the '/transcribe' endpoint we'll add to Colab
-    const colabUrl = "https://nonvisiting-coessentially-rosette.ngrok-free.dev/transcribe";
-
-    const response = await fetch(colabUrl, {
+  try {
+    const res = await fetch(backendUrl("/transcribe"), {
       method: "POST",
-      body: colabFormData,
+      headers: backendHeaders(req),
+      body: form,
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Colab Transcription Error:", errorText);
-      throw new Error("Colab failed to process audio");
-    }
-
-    const data = await response.json();
-
-    // 3. Return the Konkani Devanagari text back to the UI
-    return NextResponse.json({ text: data.text });
-
+    if (!res.ok) return backendError(res);
+    const data = await res.json();
+    return Response.json({ text: typeof data.text === "string" ? data.text : "" });
   } catch (error) {
-    console.error("Transcription Proxy Error:", error);
-    return NextResponse.json({ error: "Failed to transcribe audio" }, { status: 500 });
+    return backendUnavailable(error);
   }
 }

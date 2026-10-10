@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Noto_Sans_Devanagari } from "next/font/google";
 import "./globals.css";
 
 const inter = Inter({
@@ -7,13 +7,23 @@ const inter = Inter({
   variable: "--font-geist-sans",
 });
 
+// Self-hosted by next/font, so Devanagari looks the same on every device.
+const notoDevanagari = Noto_Sans_Devanagari({
+  subsets: ["devanagari"],
+  weight: ["400", "500", "600"],
+  variable: "--font-noto-devanagari",
+});
+
 export const metadata: Metadata = {
-  title: "AI Chat | Premium Multi-Model Assistant",
-  description: "Experience the future of AI conversation with our premium multi-model chat interface",
+  title: "Konkani Companion",
+  description: "An AI assistant for Devanagari Konkani: voice, text and documents, answered in Konkani.",
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0a0a0b",
+  themeColor: "#111214",
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -22,12 +32,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased dark`}>
-      <head>
-        {/* Load the Google Transliteration API here */}
-        <script type="text/javascript" src="https://www.google.com/inputtools/js/api/jsapi?itc=hi-t-i0-und"></script>
-      </head>
-      <body className="min-h-full flex flex-col bg-background text-foreground">
+    <html lang="en" className={`${inter.variable} ${notoDevanagari.variable} h-full antialiased dark`}>
+      <body className="h-full bg-background text-foreground">
         {children}
       </body>
     </html>

@@ -10,6 +10,8 @@ const eslintConfig = defineConfig([
     // Default ignores of eslint-config-next:
     ".next/**",
     "out/**",
+    // Expo app, linted and typechecked with its own config:
+    "mobile/**",
     "build/**",
     "next-env.d.ts",
   ]),

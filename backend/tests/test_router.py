@@ -153,3 +153,44 @@ def test_correct_requests_have_no_note(services):
             json={"messages": [{"role": "user", "content": "translate to konkani: where is the bus stand?"}]},
         )
     assert answer_text(parse_sse(r.text)).strip() == "[KOK] where is the bus stand?"
+
+
+@pytest.mark.parametrize(
+    "query, statement",
+    [
+        ("I live in margao and i grow cashews", True),
+        ("I'm a teacher in Ponda", True),
+        ("My name is Ana", True),
+        ("We have a small paddy field near Canacona.", True),
+        ("I live in Margao. What crops suit my area?", False),
+        ("I want to know the price of cashew", False),
+        ("I need help with my ration card", False),
+        ("How do I grow cashew?", False),
+        ("Can you tell me about Margao", False),
+        ("Margao is a nice town", False),
+    ],
+)
+def test_personal_statements(query, statement):
+    from app.router import is_personal_statement
+
+    assert is_personal_statement(query) is statement
+
+
+def test_personal_statement_never_searches(services):
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "I live in margao and i grow cashews"}]},
+        )
+    assert services.search.queries == []
+    assert services.llm.classified == []  # decided by rules, no router call
+    assert "sources" not in [n for n, _ in parse_sse(r.text)]
+    system = services.llm.last_messages[0]["content"]
+    assert "telling you something about themselves" in system
+
+
+def test_clause_questions_are_not_statements():
+    from app.router import is_personal_statement
+
+    assert is_personal_statement("I grow cashew in Margao, is it a good crop") is False
+    assert is_personal_statement("My farm is in Margao and it is doing well") is True

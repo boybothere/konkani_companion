@@ -60,11 +60,22 @@ class Services:
     canary: str = field(default_factory=guardrails.new_canary)
 
 
-def build_services(settings: Settings) -> Services:
-    """Load models and clients. Slow on GPU (model download + load)."""
-    if settings.model_backend == "mock":
-        translator: Translator = MockTranslator(latency_s=settings.mock_latency_ms / 1000)
-        stt: SpeechToText = MockSTT()
+def build_services(
+    settings: Settings,
+    translator: Translator | None = None,
+    stt: SpeechToText | None = None,
+) -> Services:
+    """Load models and clients. Slow on GPU (model download + load).
+
+    Pass ``translator`` and ``stt`` to reuse models that are already loaded
+    (e.g. re-running the Colab cell after a code update) instead of loading a
+    second copy onto the GPU.
+    """
+    if translator is not None and stt is not None:
+        translator = getattr(translator, "inner", translator)  # unwrap an old batcher
+    elif settings.model_backend == "mock":
+        translator = MockTranslator(latency_s=settings.mock_latency_ms / 1000)
+        stt = MockSTT()
     else:
         from .stt import WhisperSTT
         from .translator import QwenTranslator

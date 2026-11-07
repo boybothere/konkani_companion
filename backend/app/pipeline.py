@@ -20,7 +20,7 @@ from typing import Any, AsyncIterator, Callable
 
 from . import guardrails, prompts
 from .memory import clean_facts, format_memory
-from .router import detect_translation, needs_search
+from .router import detect_translation, mismatch_note, needs_search
 from .config import Settings
 from .llm import LLM, GroqLLM, LLMError, MockLLM
 from .ocr import DocumentError, ExtractResult, extract_text
@@ -274,8 +274,9 @@ async def chat_events(
             "output_language": request.target,
             "route": "translate",
         })
+        note = mismatch_note(request)
         yield Event("english_delta", english)
-        yield Event("delta", translation)
+        yield Event("delta", note + translation)
         yield Event("english", {"text": english})
         yield Event("done")
         return

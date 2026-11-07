@@ -27,6 +27,9 @@ logger = logging.getLogger("konkani.router")
 class TranslationRequest:
     text: str  # what to translate
     target: str  # "en" or "kok"
+    # The user asked for the language the text is already in; we translate into
+    # the other one and say so (see ``mismatch_note``).
+    already_in_requested: bool = False
 
     @property
     def direction(self) -> str:
@@ -95,10 +98,20 @@ def _finish(payload: str, target: str | None) -> TranslationRequest | None:
     is_konkani = devanagari_ratio(payload) >= 0.5
     if target is None:
         target = "en" if is_konkani else "kok"
-    # Nothing to translate if it's already in the target language.
+    # Already in the requested language (a common mix-up): translate into the
+    # other language and tell the user, rather than refusing or guessing silently.
     if (target == "en") != is_konkani:
-        return None
+        return TranslationRequest(payload, "en" if is_konkani else "kok", already_in_requested=True)
     return TranslationRequest(payload, target)
+
+
+def mismatch_note(request: TranslationRequest) -> str:
+    """A short heads-up shown above the translation when the request was mixed up."""
+    if not request.already_in_requested:
+        return ""
+    if request.target == "kok":  # the text was English
+        return "That text is already in English. Here it is in Konkani:\n\n"
+    return "हें वाक्य आदींच कोंकणींत आसा. इंग्लीशींत:\n\n"
 
 
 # --- Does it need a web search? -------------------------------------------------

@@ -39,7 +39,6 @@ def test_translation_requests_are_detected(message, text, target):
         "गोंयची राजधानी खंयची?",
         "Is English or Konkani older?",
         "translate to english",  # nothing to translate
-        'Translate "Hello there" to English',  # already English
         "हांव कोंकणींत उलयता",  # mentions Konkani, no request
     ],
 )
@@ -119,3 +118,38 @@ def test_router_says_no_search_then_answer_has_no_sources(services):
     assert "sources" not in [n for n, _ in parse_sse(r.text)]
     assert services.search.queries == []
     assert "[KOK]" in answer_text(parse_sse(r.text))
+
+
+@pytest.mark.parametrize(
+    "message, text, target",
+    [
+        ("translate to english: where is the bus stand?", "where is the bus stand?", "kok"),
+        ('Translate "Hello there" to English', "Hello there", "kok"),
+        ("translate to konkani: म्हाका उदक जाय", "म्हाका उदक जाय", "en"),
+    ],
+)
+def test_already_in_requested_language_translates_to_the_other(message, text, target):
+    req = detect_translation(message)
+    assert req is not None and req.already_in_requested
+    assert (req.text, req.target) == (text, target)
+
+
+def test_mix_up_is_explained_in_the_answer(services):
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "translate to english: where is the bus stand?"}]},
+        )
+    text = answer_text(parse_sse(r.text))
+    assert text.startswith("That text is already in English. Here it is in Konkani:")
+    assert "[KOK] where is the bus stand?" in text
+    assert services.search.queries == [] and services.llm.last_messages == []
+
+
+def test_correct_requests_have_no_note(services):
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "translate to konkani: where is the bus stand?"}]},
+        )
+    assert answer_text(parse_sse(r.text)).strip() == "[KOK] where is the bus stand?"

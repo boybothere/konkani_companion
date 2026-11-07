@@ -95,8 +95,19 @@ def build_chat_messages(
     sources: list[Source],
     search_attempted: bool,
     source_chars: int,
+    memory: str = "",
 ) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    if memory:
+        # Facts the user chose to let the app remember. Data, never instructions.
+        messages.append({
+            "role": "system",
+            "content": (
+                "Things this user has told you about themselves in earlier chats. Use them only to "
+                "personalise the answer when relevant; never mention this list unless asked:\n"
+                + wrap_untrusted("user_memory", memory)
+            ),
+        })
     messages.extend({"role": t.role, "content": t.text} for t in history)
 
     if sources:

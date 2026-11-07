@@ -2,7 +2,9 @@
 
 Endpoints
     GET  /health                       liveness + which providers are configured
-    POST /transcribe                   audio -> Devanagari text
+    POST /transcribe                   audio -> text (form field ``language``: kok | en | auto)
+    POST /translate                    text -> translation (kok2en | en2kok | auto), no LLM
+    POST /memory/extract               update a user's memory facts after an exchange
     POST /openai/v1/chat/completions   chat, streamed as server-sent events
     POST /analyze-document             PDF/image -> OCR text, English, Konkani summary
     POST /analyze-document/stream      same, with stage events and a final ``result`` event
@@ -27,12 +29,13 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from . import security
 from .config import Settings, get_settings
+from .memory import MAX_FACTS, extract_memory
 from .ocr import DocumentError, detect_kind
 from .pipeline import (
     Event,
@@ -43,6 +46,7 @@ from .pipeline import (
     build_services,
     chat_events,
     document_chat_events,
+    translate_any,
 )
 from .stt import AudioError
 
@@ -62,6 +66,10 @@ class ChatRequest(BaseModel):
 
     messages: list[ChatMessage] = Field(min_length=1, max_length=100)
     language: Literal["en", "kok"] = "en"
+    # Language of the answer: Konkani (default) or English for English mode.
+    output_language: Literal["kok", "en"] = "kok"
+    # Short facts the user saved about themselves (see app.memory).
+    memory: list[str] = Field(default_factory=list, max_length=MAX_FACTS * 2)
     model: str | None = None  # accepted for OpenAI compatibility, not used
     stream: bool = True  # responses are always streamed
 
@@ -78,9 +86,30 @@ class DocumentChatRequest(BaseModel):
 
     question: str = Field(min_length=1, max_length=4_000)
     document_context: str = Field(min_length=1, max_length=100_000)
+    output_language: Literal["kok", "en"] = "kok"
 
 
-def _sse(events: AsyncIterator[Event]) -> AsyncIterator[str]:
+class MemoryRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    facts: list[str] = Field(default_factory=list, max_length=MAX_FACTS * 2)
+    question: str = Field(min_length=1, max_length=4_000)  # English version of the user's message
+    answer: str = Field(default="", max_length=8_000)  # English version of the reply
+
+    @field_validator("facts")
+    @classmethod
+    def short_facts(cls, facts: list[str]) -> list[str]:
+        return [f[:300] for f in facts]
+
+
+class TranslateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    text: str = Field(min_length=1, max_length=20_000)
+    direction: Literal["auto", "kok2en", "en2kok"] = "auto"
+
+
+def _sse(events: AsyncIterator[Event], jobs: "security.JobLimiter | None" = None) -> AsyncIterator[str]:
     async def generate() -> AsyncIterator[str]:
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
@@ -95,6 +124,15 @@ def _sse(events: AsyncIterator[Event]) -> AsyncIterator[str]:
             }
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+        # Take a job slot only once the stream is actually running, so a client
+        # that disconnects early can never leave a slot held.
+        if jobs is not None:
+            try:
+                await jobs.acquire()
+            except HTTPException as exc:
+                yield f"event: error\ndata: {json.dumps({'message': exc.detail})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
         yield chunk({"role": "assistant", "content": ""})
         try:
             async for event in events:
@@ -109,13 +147,16 @@ def _sse(events: AsyncIterator[Event]) -> AsyncIterator[str]:
             logger.exception("stream failed")
             yield f"event: error\ndata: {json.dumps({'message': 'Something went wrong while answering.'})}\n\n"
             yield "data: [DONE]\n\n"
+        finally:
+            if jobs is not None:
+                jobs.release()
 
     return generate()
 
 
-def _streaming(events: AsyncIterator[Event]) -> StreamingResponse:
+def _streaming(events: AsyncIterator[Event], jobs: "security.JobLimiter | None" = None) -> StreamingResponse:
     return StreamingResponse(
-        _sse(events),
+        _sse(events, jobs),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )
@@ -137,6 +178,25 @@ def create_app(services: Services | None = None, settings: Settings | None = Non
     app = FastAPI(title="Konkani Companion API", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.services = services
     limiter = security.RateLimiter(settings.rate_limit_per_minute)
+    jobs = security.JobLimiter(settings.max_concurrent_jobs, settings.queue_timeout_s)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
+    async def streamed_job(events: AsyncIterator[Event]) -> StreamingResponse:
+        """Stream while holding a job slot (released when it ends or the client leaves)."""
+        return _streaming(events, jobs)
+
+    async def run_job(fn, *args):
+        await jobs.acquire()
+        try:
+            return await fn(*args)
+        finally:
+            jobs.release()
 
     def get_services(request: Request) -> Services:
         return request.app.state.services
@@ -158,10 +218,15 @@ def create_app(services: Services | None = None, settings: Settings | None = Non
             "llm_backend": settings.llm_backend,
             "search_providers": svc.search.configured_providers(),
             "auth": bool(settings.backend_api_key),
+            "jobs": {"running": jobs.running, "waiting": jobs.waiting, "max": settings.max_concurrent_jobs},
         }
 
     @app.post("/transcribe", dependencies=[Depends(guard)])
-    async def transcribe(file: UploadFile = File(...), svc: Services = Depends(get_services)) -> dict:
+    async def transcribe(
+        file: UploadFile = File(...),
+        language: Literal["kok", "en", "auto"] = Form("kok"),
+        svc: Services = Depends(get_services),
+    ) -> dict:
         data = await security.read_limited(file, settings.max_audio_bytes)
         suffix = security.audio_suffix(data)
         if suffix is None:
@@ -170,7 +235,7 @@ def create_app(services: Services | None = None, settings: Settings | None = Non
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
-            text = await asyncio.to_thread(svc.stt.transcribe_file, path)
+            text = await run_job(asyncio.to_thread, svc.stt.transcribe_file, path, language)
         except AudioError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
         finally:
@@ -178,12 +243,33 @@ def create_app(services: Services | None = None, settings: Settings | None = Non
                 os.remove(path)
             except OSError:
                 pass
-        return {"text": text}
+        return {"text": text, "language": language}
+
+    @app.post("/memory/extract", dependencies=[Depends(guard)])
+    async def memory_extract(body: MemoryRequest, svc: Services = Depends(get_services)) -> dict:
+        """Propose an updated memory after an exchange. The browser decides whether to save it."""
+        facts = await extract_memory(svc.llm, body.facts, body.question, body.answer)
+        return {"facts": facts}
+
+    @app.post("/translate", dependencies=[Depends(guard)])
+    async def translate(body: TranslateRequest, svc: Services = Depends(get_services)) -> dict:
+        """Plain translation with the Konkani model (Interpreter mode, documents)."""
+        text = body.text.strip()
+        if len(text) > settings.max_document_chars:
+            raise HTTPException(
+                413,
+                f"Text is longer than {settings.max_document_chars} characters.",
+            )
+        if not text:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "There is no text to translate.")
+        translation, direction = await run_job(translate_any, svc, text, body.direction)
+        return {"translation": translation, "direction": direction}
 
     @app.post("/openai/v1/chat/completions", dependencies=[Depends(guard)])
     async def chat(body: ChatRequest, svc: Services = Depends(get_services)) -> StreamingResponse:
         messages = [IncomingMessage(m.role, m.content, m.english) for m in body.messages]
-        return _streaming(chat_events(svc, messages, body.language))
+        memory = [m[:300] for m in body.memory]
+        return await streamed_job(chat_events(svc, messages, body.language, body.output_language, memory))
 
     async def read_document(file: UploadFile) -> bytes:
         data = await security.read_limited(file, settings.max_document_bytes)
@@ -198,7 +284,7 @@ def create_app(services: Services | None = None, settings: Settings | None = Non
     async def analyze(file: UploadFile = File(...), svc: Services = Depends(get_services)) -> dict:
         data = await read_document(file)
         try:
-            return await analyze_document(svc, data)
+            return await run_job(analyze_document, svc, data)
         except DocumentError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
@@ -207,10 +293,12 @@ def create_app(services: Services | None = None, settings: Settings | None = Non
         """Same as /analyze-document, but reports progress as SSE ``status`` events
         and delivers the result as a ``result`` event."""
         data = await read_document(file)
-        return _streaming(analyze_document_events(svc, data))
+        return await streamed_job(analyze_document_events(svc, data))
 
     @app.post("/document-chat", dependencies=[Depends(guard)])
     async def document_chat(body: DocumentChatRequest, svc: Services = Depends(get_services)) -> StreamingResponse:
-        return _streaming(document_chat_events(svc, body.question, body.document_context))
+        return await streamed_job(
+            document_chat_events(svc, body.question, body.document_context, body.output_language)
+        )
 
     return app

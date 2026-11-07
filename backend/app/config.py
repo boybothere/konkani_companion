@@ -41,6 +41,7 @@ def _list(name: str, default: str) -> list[str]:
 class Settings:
     # Which implementations to load. "mock" lets the API run without a GPU.
     model_backend: str
+    mock_latency_ms: int
     llm_backend: str
 
     # Qwen translation bridge (prompts must match the LoRA training prompts).
@@ -48,6 +49,7 @@ class Settings:
     qwen_max_seq_length: int
     translate_chunk_words: int
     translate_max_new_tokens: int
+    translate_batch_size: int
 
     # Speech
     whisper_model: str
@@ -75,6 +77,8 @@ class Settings:
     # Security and limits
     backend_api_key: str
     rate_limit_per_minute: int
+    max_concurrent_jobs: int
+    queue_timeout_s: float
     max_input_chars: int
     max_history_turns: int
     max_audio_bytes: int
@@ -93,11 +97,15 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         model_backend=_str("MODEL_BACKEND", "gpu").lower(),
+        # Mock mode only: simulated GPU time per translation call (for load tests).
+        mock_latency_ms=_int("MOCK_LATENCY_MS", 0),
         llm_backend=_str("LLM_BACKEND", "groq").lower(),
         qwen_model=_str("QWEN_MODEL", "braisefernz07/konkani-qwen-lora"),
         qwen_max_seq_length=_int("QWEN_MAX_SEQ_LENGTH", 2048),
         translate_chunk_words=_int("TRANSLATE_CHUNK_WORDS", 250),
         translate_max_new_tokens=_int("TRANSLATE_MAX_NEW_TOKENS", 1024),
+        # Segments translated together in one GPU call; 1 disables batching.
+        translate_batch_size=max(1, _int("TRANSLATE_BATCH_SIZE", 4)),
         whisper_model=_str("WHISPER_MODEL", "medium"),
         whisper_language=_str("WHISPER_LANGUAGE", "hi"),
         groq_api_key=_str("GROQ_API_KEY"),
@@ -117,6 +125,10 @@ def load_settings() -> Settings:
         search_timeout_s=_float("SEARCH_TIMEOUT_S", 20.0),
         backend_api_key=_str("BACKEND_API_KEY"),
         rate_limit_per_minute=_int("RATE_LIMIT_PER_MINUTE", 30),
+        # Heavy requests (chat, voice, documents, translation) running at once;
+        # more wait up to QUEUE_TIMEOUT_S, then get "server busy" (503).
+        max_concurrent_jobs=_int("MAX_CONCURRENT_JOBS", 8),
+        queue_timeout_s=_float("QUEUE_TIMEOUT_S", 20.0),
         max_input_chars=_int("MAX_INPUT_CHARS", 4000),
         max_history_turns=_int("MAX_HISTORY_TURNS", 6),
         max_audio_bytes=_int("MAX_AUDIO_BYTES", 10 * 1024 * 1024),

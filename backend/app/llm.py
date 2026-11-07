@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import AsyncIterator, Protocol
 
@@ -75,7 +76,8 @@ class GroqLLM:
 class MockLLM:
     """Deterministic stand-in for tests and frontend development."""
 
-    def __init__(self, answer: str | None = None) -> None:
+    def __init__(self, answer: str | None = None, word_delay_s: float = 0.0) -> None:
+        self.word_delay_s = word_delay_s  # imitate a model writing over time (load tests)
         self.answer = answer or (
             "Panaji is the capital of Goa [1].\n\n"
             "It lies on the banks of the Mandovi river."
@@ -85,6 +87,8 @@ class MockLLM:
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.last_messages = messages
         for word in self.answer.split(" "):
+            if self.word_delay_s:
+                await asyncio.sleep(self.word_delay_s)
             yield word + " "
 
     async def complete(self, messages: list[dict[str, str]]) -> str:

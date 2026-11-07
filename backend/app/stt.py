@@ -17,8 +17,19 @@ class AudioError(ValueError):
     """The audio could not be decoded or breaks a limit."""
 
 
+# Spoken language requested by the client -> Whisper language code.
+# Whisper has no Konkani model; Hindi decoding gives Devanagari output that
+# matches spoken Konkani best. "auto" lets Whisper detect the language.
+def whisper_language(requested: str | None, default: str) -> str | None:
+    if requested == "en":
+        return "en"
+    if requested == "auto":
+        return None
+    return default or None
+
+
 class SpeechToText(Protocol):
-    def transcribe_file(self, path: str) -> str: ...
+    def transcribe_file(self, path: str, language: str | None = None) -> str: ...
 
 
 class WhisperSTT:
@@ -31,7 +42,8 @@ class WhisperSTT:
         self.settings = settings
         self.lock = gpu_lock
 
-    def transcribe_file(self, path: str) -> str:
+    def transcribe_file(self, path: str, language: str | None = None) -> str:
+        """Transcribe audio. ``language`` is "kok" (default), "en" or "auto"."""
         import torch
 
         try:
@@ -49,15 +61,18 @@ class WhisperSTT:
         with self.lock:
             result = self.model.transcribe(
                 audio,
-                language=self.settings.whisper_language or None,
+                language=whisper_language(language, self.settings.whisper_language),
                 fp16=torch.cuda.is_available(),
             )
         return str(result.get("text", "")).strip()
 
 
 class MockSTT:
-    def __init__(self, text: str = "गोंयचो सद्याचो मुख्यमंत्री कोण?") -> None:
+    def __init__(self, text: str = "गोंयचो सद्याचो मुख्यमंत्री कोण?", english: str = "Who is the chief minister of Goa?") -> None:
         self.text = text
+        self.english = english
+        self.languages: list[str | None] = []
 
-    def transcribe_file(self, path: str) -> str:
-        return self.text
+    def transcribe_file(self, path: str, language: str | None = None) -> str:
+        self.languages.append(language)
+        return self.english if language == "en" else self.text

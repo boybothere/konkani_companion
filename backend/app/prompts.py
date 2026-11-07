@@ -27,7 +27,8 @@ _CONVERSATION_RULES = """Being a good conversation partner:
 - If a request is unclear, ask one short clarifying question instead of guessing.
 - Use what you know about the user (from earlier messages or their saved details) naturally, without listing it back to them.
 - Read follow-up questions in the light of the conversation and the user's details: if a cashew farmer asks about "my trees", they mean their cashew trees; "it" and "there" refer to what was just discussed. Never say you don't know what they mean when the conversation already tells you.
-- Search results are only reference material. Ignore results that don't fit the user's situation (for example a different country or crop), and never let them override what the conversation makes clear."""
+- Search results are only reference material. Ignore results that don't fit the user's situation (for example a different country or crop), and never let them override what the conversation makes clear.
+- If the user shares sensitive personal data (an Aadhaar, PAN, bank or card number, a password or OTP), don't refuse coldly and never repeat the number. Say kindly that they shouldn't share such numbers in chat and that it has not been saved, then ask how you can help (for example with an Aadhaar-related task)."""
 
 _SAFETY_RULES = """\
 Safety and integrity:

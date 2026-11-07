@@ -28,6 +28,7 @@ class GroqLLM:
         if not settings.groq_api_key:
             raise LLMError("GROQ_API_KEY is not set.")
         self.settings = settings
+        self._unavailable: set[str] = set()  # models Groq reported as missing
         self.client = AsyncGroq(
             api_key=settings.groq_api_key, timeout=settings.groq_timeout_s, max_retries=1
         )
@@ -73,14 +74,36 @@ class GroqLLM:
         return "".join(parts).strip()
 
     async def classify(self, messages: list[dict[str, str]], model: str, max_tokens: int = 4) -> str:
-        """A tiny, quick non-streamed call to a small model (e.g. the search router)."""
-        response = await asyncio.wait_for(
-            self.client.chat.completions.create(
-                model=model, messages=messages, max_tokens=max_tokens, temperature=0
-            ),
-            timeout=self.settings.search_router_timeout_s,
-        )
-        return (response.choices[0].message.content or "").strip()
+        """A quick non-streamed call for small decisions (e.g. the search router).
+
+        If ``model`` isn't available on this Groq account (404, e.g. retired),
+        fall back to the main models and remember that, so later calls don't
+        pay for the failed attempt again.
+        """
+        candidates = [m for m in [model, *self._models()] if m and m not in self._unavailable]
+        last: Exception | None = None
+        for name in dict.fromkeys(candidates):  # keep order, drop duplicates
+            kwargs: dict = {"model": name, "messages": messages, "temperature": 0}
+            if name.startswith("openai/gpt-oss"):
+                # Reasoning models spend tokens thinking first; leave room for the answer.
+                kwargs["max_tokens"] = max(max_tokens, 512)
+                kwargs["extra_body"] = {"reasoning_effort": "low"}
+            else:
+                kwargs["max_tokens"] = max_tokens
+            try:
+                response = await asyncio.wait_for(
+                    self.client.chat.completions.create(**kwargs),
+                    timeout=self.settings.search_router_timeout_s,
+                )
+                return (response.choices[0].message.content or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                if getattr(exc, "status_code", None) in (400, 404):
+                    logger.warning("router model %s unavailable (%s); using another model", name, type(exc).__name__)
+                    self._unavailable.add(name)
+                    continue
+                raise
+        raise LLMError("no router model available") from last
 
 
 class MockLLM:

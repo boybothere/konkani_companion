@@ -72,6 +72,16 @@ class GroqLLM:
         parts = [part async for part in self.stream(messages)]
         return "".join(parts).strip()
 
+    async def classify(self, messages: list[dict[str, str]], model: str, max_tokens: int = 4) -> str:
+        """A tiny, quick non-streamed call to a small model (e.g. the search router)."""
+        response = await asyncio.wait_for(
+            self.client.chat.completions.create(
+                model=model, messages=messages, max_tokens=max_tokens, temperature=0
+            ),
+            timeout=self.settings.search_router_timeout_s,
+        )
+        return (response.choices[0].message.content or "").strip()
+
 
 class MockLLM:
     """Deterministic stand-in for tests and frontend development."""
@@ -83,6 +93,12 @@ class MockLLM:
             "It lies on the banks of the Mandovi river."
         )
         self.last_messages: list[dict[str, str]] = []
+        self.route_reply = "SEARCH"  # what the search router answers in tests
+        self.classified: list[str] = []
+
+    async def classify(self, messages: list[dict[str, str]], model: str, max_tokens: int = 4) -> str:
+        self.classified.append(messages[-1]["content"])
+        return self.route_reply
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.last_messages = messages

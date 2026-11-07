@@ -21,12 +21,6 @@ logger = logging.getLogger("konkani.search")
 FIRECRAWL_URL = "https://api.firecrawl.dev/v1/search"
 TAVILY_URL = "https://api.tavily.com/search"
 
-_SMALL_TALK = re.compile(
-    r"^\s*(hi|hii+|hello|hey|namaskar|namaste|dev borem korum|thanks?|thank you|ok(ay)?|bye|good (morning|afternoon|evening|night)|who are you|how are you)\W*$",
-    re.I,
-)
-
-
 @dataclass(frozen=True)
 class Source:
     title: str
@@ -58,14 +52,6 @@ def make_snippet(text: str, limit: int = 280) -> str:
     if len(text) > limit:
         text = text[:limit].rsplit(" ", 1)[0] + "…"
     return text
-
-
-def should_search(query_en: str, mode: str) -> bool:
-    if mode == "never":
-        return False
-    if mode == "always":
-        return True
-    return not _SMALL_TALK.match(query_en)
 
 
 def _clean_sources(raw: list[Source], limit: int) -> list[Source]:

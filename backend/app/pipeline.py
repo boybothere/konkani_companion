@@ -20,10 +20,11 @@ from typing import Any, AsyncIterator, Callable
 
 from . import guardrails, prompts
 from .memory import clean_facts, format_memory
+from .router import detect_translation, needs_search
 from .config import Settings
 from .llm import LLM, GroqLLM, LLMError, MockLLM
 from .ocr import DocumentError, ExtractResult, extract_text
-from .search import SearchService, Source, make_snippet, should_search
+from .search import SearchService, Source, make_snippet
 from .stt import MockSTT, SpeechToText
 from .text_utils import Segment, StreamSegmenter, detect_input_language, devanagari_ratio
 from .translator import (
@@ -261,6 +262,24 @@ async def chat_events(
         yield Event("done")
         return
 
+    # "Translate X to English" and similar: straight to the translation model.
+    request = detect_translation(user_text)
+    if request is not None:
+        yield Event("status", {"stage": "translating"})
+        translation = await _translate(services, request.text, request.direction)
+        english = translation if request.target == "en" else request.text
+        yield Event("meta", {
+            "input_language": "kok" if request.target == "en" else "en",
+            "query_en": f"Translate into {'English' if request.target == 'en' else 'Konkani'}: {english}",
+            "output_language": request.target,
+            "route": "translate",
+        })
+        yield Event("english_delta", english)
+        yield Event("delta", translation)
+        yield Event("english", {"text": english})
+        yield Event("done")
+        return
+
     input_lang = detect_input_language(user_text, language_hint)
     if input_lang == "kok":
         yield Event("status", {"stage": "understanding"})
@@ -273,7 +292,7 @@ async def chat_events(
     yield Event("meta", {"input_language": input_lang, "query_en": query_en, "output_language": output_language})
 
     sources: list[Source] = []
-    attempted = should_search(query_en, settings.search_mode)
+    attempted = await needs_search(services.llm, settings, query_en)
     if attempted:
         yield Event("status", {"stage": "searching"})
         result = await services.search.search(query_en)

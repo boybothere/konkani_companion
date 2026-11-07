@@ -70,6 +70,8 @@ class Settings:
     tavily_api_key: str
     search_providers: list[str]
     search_mode: str
+    search_router_model: str
+    search_router_timeout_s: float
     search_max_results: int
     search_source_chars: int
     search_timeout_s: float
@@ -120,6 +122,10 @@ def load_settings() -> Settings:
         tavily_api_key=_str("TAVILY_API_KEY"),
         search_providers=_list("SEARCH_PROVIDERS", "firecrawl,tavily,duckduckgo"),
         search_mode=_str("SEARCH_MODE", "auto").lower(),
+        # Small, fast model that decides unclear "does this need a web search?" cases.
+        # Empty = search whenever the rules are unsure.
+        search_router_model=_str("SEARCH_ROUTER_MODEL", "llama-3.1-8b-instant"),
+        search_router_timeout_s=_float("SEARCH_ROUTER_TIMEOUT_S", 4.0),
         search_max_results=_int("SEARCH_MAX_RESULTS", 5),
         search_source_chars=_int("SEARCH_SOURCE_CHARS", 1500),
         search_timeout_s=_float("SEARCH_TIMEOUT_S", 20.0),

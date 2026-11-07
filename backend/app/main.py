@@ -53,6 +53,24 @@ from .stt import AudioError
 logger = logging.getLogger("konkani.api")
 
 
+def _code_version() -> str:
+    """Short git commit of the running code, so /health shows which version is live."""
+    import subprocess
+    from pathlib import Path
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(Path(__file__).resolve().parent), "log", "-1", "--format=%h %s"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return out.stdout.strip()[:80] or "unknown"
+    except Exception:  # noqa: BLE001 - git may be missing (e.g. Docker image)
+        return "unknown"
+
+
+_VERSION = _code_version()
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -218,6 +236,7 @@ def create_app(services: Services | None = None, settings: Settings | None = Non
             "llm_backend": settings.llm_backend,
             "search_providers": svc.search.configured_providers(),
             "auth": bool(settings.backend_api_key),
+            "version": _VERSION,
             "jobs": {"running": jobs.running, "waiting": jobs.waiting, "max": settings.max_concurrent_jobs},
         }
 

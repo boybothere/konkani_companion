@@ -36,15 +36,16 @@ const normalise = (messages: Message[]): Message[] =>
 
 const newSessionId = () => Date.now().toString();
 
-const ANSWER_LANGUAGE_KEY = "kc:answerLanguage";
+const LANGUAGE_KEY = "kc:language";
 
-// Remembered per browser; Konkani unless the user picked English mode.
-function useAnswerLanguage(): [AnswerLanguage, (language: AnswerLanguage) => void] {
+// The conversation language (the English | Konkani toggle), remembered per
+// browser. Konkani unless the user chose English.
+function useConversationLanguage(): [AnswerLanguage, (language: AnswerLanguage) => void] {
   const [language, setLanguage] = useState<AnswerLanguage>("kok");
   useEffect(() => {
     try {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after hydration
-      if (localStorage.getItem(ANSWER_LANGUAGE_KEY) === "en") setLanguage("en");
+      if (localStorage.getItem(LANGUAGE_KEY) === "en") setLanguage("en");
     } catch {
       // storage unavailable: keep the default
     }
@@ -52,7 +53,7 @@ function useAnswerLanguage(): [AnswerLanguage, (language: AnswerLanguage) => voi
   const update = (next: AnswerLanguage) => {
     setLanguage(next);
     try {
-      localStorage.setItem(ANSWER_LANGUAGE_KEY, next);
+      localStorage.setItem(LANGUAGE_KEY, next);
     } catch {
       // storage unavailable: the choice lasts for this visit only
     }
@@ -63,7 +64,11 @@ function useAnswerLanguage(): [AnswerLanguage, (language: AnswerLanguage) => voi
 function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   const uid = user.uid;
   const [activeTab, setActiveTab] = useState<Tab>("chat");
-  const [answerLanguage, setAnswerLanguage] = useAnswerLanguage();
+  const [language, setLanguage] = useConversationLanguage();
+  const languageRef = useRef<AnswerLanguage>("kok");
+  useEffect(() => {
+    languageRef.current = language;
+  }, [language]);
   const [memory, setMemory] = useState<MemoryState>(EMPTY_MEMORY);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memoryError, setMemoryError] = useState<string | null>(null);
@@ -178,7 +183,11 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
     setStatusSince((since) => (stage ? since ?? Date.now() : null));
   };
 
-  const handleSendMessage = async (content: string, language: "en" | "kok") => {
+  const handleSendMessage = async (
+    content: string,
+    language: "en" | "kok",
+    conversationLanguage: AnswerLanguage = languageRef.current,
+  ) => {
     if (!content.trim() || isLoading) return;
 
     const history: Message[] = [...messages, { role: "user", content }];
@@ -205,7 +214,9 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           // The English versions let the backend keep conversation context.
           messages: history.map(({ role, content, english }) => ({ role, content, english })),
           language,
-          output_language: answerLanguage,
+          // The toggle decides the answer language; `language` above is only a
+          // hint for detecting the question's language (it's detected from its script).
+          output_language: conversationLanguage,
           memory: memory.enabled ? memory.facts : [],
         }),
         signal: controller.signal,
@@ -281,8 +292,8 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
 
   const stopGenerating = () => abortRef.current?.abort();
 
-  const handleAudioSubmit = (audioBlob: Blob, language: "en" | "kok"): Promise<string> =>
-    transcribe(audioBlob, language);
+  // English or Konkani speech is detected on the server, whatever the toggle says.
+  const handleAudioSubmit = (audioBlob: Blob): Promise<string> => transcribe(audioBlob, "auto");
 
   const switchSession = (id: string) => {
     setMobileSidebar(false);
@@ -387,15 +398,15 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           <ChatInput
             onSendMessage={handleSendMessage}
             onAudioSubmit={handleAudioSubmit}
-            answerLanguage={answerLanguage}
-            onAnswerLanguageChange={setAnswerLanguage}
+            language={language}
+            onLanguageChange={setLanguage}
             busy={isLoading}
             onStop={stopGenerating}
             onAttach={() => setActiveTab("document")}
           />
         </div>
         <div className={`min-h-0 flex-1 ${activeTab === "document" ? "block" : "hidden"}`}>
-          <DocumentTab answerLanguage={answerLanguage} />
+          <DocumentTab answerLanguage={language} />
         </div>
         <div className={`min-h-0 flex-1 ${activeTab === "interpreter" ? "block" : "hidden"}`}>
           <InterpreterTab />

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { AlertCircle, ArrowUp, Copy, Check, Loader2, Mic, Square, Trash2 } from "lucide-react";
-import { transcribe, translate, type SpokenLanguage } from "@/lib/speech";
+import { transcribe, translate, type Speaker } from "@/lib/speech";
 
 // Interpreter: a face-to-face conversation between an English speaker and a
 // Konkani speaker. Each turn is transcribed (if spoken) and translated with the
@@ -10,14 +10,14 @@ import { transcribe, translate, type SpokenLanguage } from "@/lib/speech";
 
 type Turn = {
   id: number;
-  speaker: SpokenLanguage;
+  speaker: Speaker;
   original: string;
   translation: string;
   stage: "transcribing" | "translating" | "done" | "error";
   error?: string;
 };
 
-const SIDES: { lang: SpokenLanguage; title: string; titleLocal: string; placeholder: string; target: string }[] = [
+const SIDES: { lang: Speaker; title: string; titleLocal: string; placeholder: string; target: string }[] = [
   { lang: "en", title: "English speaker", titleLocal: "English", placeholder: "Type in English…", target: "Konkani" },
   { lang: "kok", title: "Konkani speaker", titleLocal: "कोंकणी", placeholder: "कोंकणींत बरयात…", target: "English" },
 ];
@@ -26,8 +26,8 @@ const isDeva = (text: string) => /[ऀ-ॿ]/.test(text);
 
 export default function InterpreterTab() {
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [recording, setRecording] = useState<SpokenLanguage | null>(null);
-  const [drafts, setDrafts] = useState<Record<SpokenLanguage, string>>({ en: "", kok: "" });
+  const [recording, setRecording] = useState<Speaker | null>(null);
+  const [drafts, setDrafts] = useState<Record<Speaker, string>>({ en: "", kok: "" });
   const [micError, setMicError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -48,7 +48,7 @@ export default function InterpreterTab() {
   const busy = turns.some((t) => t.stage === "transcribing" || t.stage === "translating");
 
   /** Translate one turn; `audio` is transcribed first. */
-  const runTurn = async (speaker: SpokenLanguage, input: { text?: string; audio?: Blob }) => {
+  const runTurn = async (speaker: Speaker, input: { text?: string; audio?: Blob }) => {
     const id = nextId.current++;
     setTurns((prev) => [
       ...prev,
@@ -71,7 +71,7 @@ export default function InterpreterTab() {
     }
   };
 
-  const toggleMic = async (speaker: SpokenLanguage) => {
+  const toggleMic = async (speaker: Speaker) => {
     setMicError(null);
     if (recording) {
       if (recording === speaker) recorderRef.current?.stop();
@@ -95,7 +95,7 @@ export default function InterpreterTab() {
     }
   };
 
-  const sendText = (speaker: SpokenLanguage) => {
+  const sendText = (speaker: Speaker) => {
     const text = drafts[speaker].trim();
     if (!text) return;
     setDrafts((d) => ({ ...d, [speaker]: "" }));

@@ -117,3 +117,21 @@ def test_translate_requires_api_key_when_configured(services):
         allowed = client.post("/translate", json={"text": "Hello"}, headers={"X-API-Key": "secret"})
     assert denied.status_code == 401
     assert allowed.status_code == 200
+
+
+def test_auto_voice_picks_english_or_konkani_never_other_scripts():
+    from app.stt import pick_language
+
+    assert pick_language({"en": 0.8, "hi": 0.1}, "hi") == "en"
+    assert pick_language({"en": 0.2, "hi": 0.5, "mr": 0.2}, "hi") == "hi"
+    # Konkani mistaken for Urdu/Marathi must still be written as Devanagari Konkani.
+    assert pick_language({"ur": 0.6, "en": 0.3}, "hi") == "hi"
+    assert pick_language({"mr": 0.45, "en": 0.4}, "hi") == "hi"
+    assert pick_language({}, "hi") == "hi"
+
+
+def test_transcribe_auto_is_accepted(services):
+    with client_for(services) as client:
+        r = client.post("/transcribe", files={"file": ("a.webm", WEBM, "audio/webm")}, data={"language": "auto"})
+    assert r.status_code == 200 and r.json()["language"] == "auto"
+    assert services.stt.languages == ["auto"]

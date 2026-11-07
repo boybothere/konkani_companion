@@ -1,7 +1,10 @@
 // Client helpers for voice transcription and plain translation.
 import { authFetch } from "@/lib/authFetch";
 
-export type SpokenLanguage = "en" | "kok";
+/** A speaker's language. */
+export type Speaker = "en" | "kok";
+/** What /transcribe should listen for: a known language, or "auto" (English vs Konkani). */
+export type SpokenLanguage = Speaker | "auto";
 export type Direction = "kok2en" | "en2kok";
 
 async function errorFrom(res: Response, fallback: string): Promise<Error> {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { PanelLeftClose, Plus, MessageSquare, Trash2, LogOut, Pencil, Search, X } from "lucide-react";
+import { PanelLeftClose, Plus, MessageSquare, Trash2, LogOut, Pencil, Search, X, Brain } from "lucide-react";
 
 type Session = {
   id: string;
@@ -26,6 +26,9 @@ interface SidebarProps {
   onSearchChange: (query: string) => void;
   account: { name: string | null; email: string | null; photoURL: string | null };
   onSignOut: () => void;
+  /** Opens the Memory panel; `memoryCount` is the number of remembered facts. */
+  onOpenMemory?: () => void;
+  memoryCount?: number;
 }
 
 export function Sidebar({
@@ -42,6 +45,8 @@ export function Sidebar({
   onSearchChange,
   account,
   onSignOut,
+  onOpenMemory,
+  memoryCount = 0,
 }: SidebarProps) {
   const initial = (account.name || account.email || "?").trim().charAt(0).toUpperCase();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -212,6 +217,22 @@ export function Sidebar({
             <p className="truncate text-sm text-sidebar-foreground">{account.name || "Signed in"}</p>
             {account.email && <p className="truncate text-xs text-subtle-foreground">{account.email}</p>}
           </div>
+          {onOpenMemory && (
+            <button
+              type="button"
+              onClick={onOpenMemory}
+              title="What Sangati remembers about you"
+              aria-label={`Memory (${memoryCount} ${memoryCount === 1 ? "fact" : "facts"})`}
+              className="relative rounded-lg p-2 text-subtle-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+            >
+              <Brain className="h-4 w-4" />
+              {memoryCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-foreground px-1 text-[9px] font-semibold text-background">
+                  {memoryCount}
+                </span>
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={onSignOut}

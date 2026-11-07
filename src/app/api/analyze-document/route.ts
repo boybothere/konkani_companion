@@ -1,7 +1,10 @@
 import { SSE_HEADERS, backendError, backendHeaders, backendUnavailable, backendUrl } from "@/lib/server/backend";
 import { requireUser } from "@/lib/server/auth";
+import { checkQuota } from "@/lib/server/quota";
 
 export const dynamic = "force-dynamic";
+
+const MAX_DOCUMENT_BYTES = 15 * 1024 * 1024; // matches the backend default
 
 // POST /api/analyze-document           -> JSON result (works with every backend version)
 // POST /api/analyze-document?stream=1  -> SSE with stage events and a final `result` event.
@@ -22,6 +25,11 @@ export async function POST(req: Request) {
   if (!(file instanceof Blob) || file.size === 0) {
     return Response.json({ error: "No document provided." }, { status: 400 });
   }
+  if (file.size > MAX_DOCUMENT_BYTES) {
+    return Response.json({ error: "File is larger than 15 MB." }, { status: 413 });
+  }
+  const limited = await checkQuota(user.uid, "document");
+  if (limited) return limited;
 
   const form = new FormData();
   form.append("file", file, file instanceof File ? file.name : "document");

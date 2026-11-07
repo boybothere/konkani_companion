@@ -2,10 +2,12 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import {
-    Upload, FileText, X, AlertCircle, ChevronDown, Copy, Check, ArrowUp, Square, RotateCcw, MessageSquare,
+    Upload, FileText, X, AlertCircle, ChevronDown, Copy, Check, ArrowUp, Square, RotateCcw, MessageSquare, Languages, Loader2,
 } from "lucide-react";
 import { readCompanionStream } from "@/lib/sse";
 import { authFetch } from "@/lib/authFetch";
+import { translate } from "@/lib/speech";
+import type { AnswerLanguage } from "./ChatInput";
 import { RichText } from "./RichText";
 import { StatusIndicator } from "./ui/StatusIndicator";
 
@@ -51,6 +53,21 @@ const formatBytes = (bytes: number) =>
     bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
 const isAbort = (error: unknown) => (error as Error)?.name === "AbortError";
+
+// Module-level so the React purity lint doesn't mistake it for render-time Date.now().
+const timestamp = () => Date.now();
+
+/** True when most letters are Latin, i.e. the document is in English. */
+const isMostlyLatin = (text: string) => {
+    const deva = (text.match(/[\u0900-\u097F]/g) ?? []).length;
+    const latin = (text.match(/[A-Za-z]/g) ?? []).length;
+    return latin > 0 && latin > deva * 2;
+};
+
+type KonkaniTranslation =
+    | { source: string; state: "loading" }
+    | { source: string; state: "done"; text: string }
+    | { source: string; state: "error"; error: string };
 
 function validate(file: File): string | null {
     const name = file.name.toLowerCase();
@@ -116,7 +133,10 @@ function Disclosure({ title, children }: { title: string; children: React.ReactN
     );
 }
 
-export default function DocumentTab() {
+export default function DocumentTab({ answerLanguage = "kok" }: { answerLanguage?: AnswerLanguage }) {
+    const englishMode = answerLanguage === "en";
+    // Full Konkani translation of an English document, made on request.
+    const [konkaniFull, setKonkaniFull] = useState<KonkaniTranslation | null>(null);
     const [file, setFile] = useState<File | null>(null);
     const [preview, setPreview] = useState<string | null>(null);
     const [fileError, setFileError] = useState<string | null>(null);
@@ -236,10 +256,10 @@ export default function DocumentTab() {
         const q = text.trim();
         if (!q || asking || !result?.english_translation) return;
 
-        setDocMessages(prev => [...prev, { role: "user", content: q }, { role: "assistant", content: "", english: "", bilingual: wantsBilingual(q) }]);
+        setDocMessages(prev => [...prev, { role: "user", content: q }, { role: "assistant", content: "", english: "", bilingual: !englishMode && wantsBilingual(q) }]);
         setQuestion("");
         setAskStage("starting");
-        setAskSince(Date.now());
+        setAskSince(timestamp());
         const controller = new AbortController();
         askAbort.current = controller;
 
@@ -249,7 +269,11 @@ export default function DocumentTab() {
             const res = await authFetch("/api/document-chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ question: q, document_context: result.english_translation }),
+                body: JSON.stringify({
+                    question: q,
+                    document_context: result.english_translation,
+                    output_language: answerLanguage,
+                }),
                 signal: controller.signal,
             });
             if (!res.ok || !res.body) {
@@ -261,7 +285,7 @@ export default function DocumentTab() {
             for await (const event of readCompanionStream(res)) {
                 switch (event.type) {
                     case "status": setAskStage(event.stage); break;
-                    case "meta": if (wantsBilingual(q, event.queryEn)) updateAnswer({ bilingual: true }); break;
+                    case "meta": if (!englishMode && wantsBilingual(q, event.queryEn)) updateAnswer({ bilingual: true }); break;
                     case "englishDelta": english += event.text; updateAnswer({ english }); break;
                     case "english": if (!english) { english = event.text; updateAnswer({ english }); } break;
                     case "delta": answer += event.text; updateAnswer({ content: answer }); break;
@@ -285,6 +309,20 @@ export default function DocumentTab() {
     };
 
     const showUpload = !result;
+    const englishDocument = !!result?.ocr_text && isMostlyLatin(result.ocr_text);
+    const konkaniForThis = konkaniFull && result && konkaniFull.source === result.english_translation ? konkaniFull : null;
+
+    const translateToKonkani = async () => {
+        const source = result?.english_translation;
+        if (!source || konkaniForThis?.state === "loading") return;
+        setKonkaniFull({ source, state: "loading" });
+        try {
+            const { translation } = await translate(source, "en2kok");
+            setKonkaniFull({ source, state: "done", text: translation });
+        } catch (err) {
+            setKonkaniFull({ source, state: "error", error: err instanceof Error ? err.message : "Translation failed." });
+        }
+    };
 
     return (
         <div className="h-full overflow-y-auto overscroll-contain">
@@ -292,7 +330,7 @@ export default function DocumentTab() {
                 <div>
                     <h2 className="text-lg font-semibold tracking-tight text-foreground">Document Lens</h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                        Upload a notice, circular or letter in Devanagari. You&apos;ll get summaries in Konkani and English, and can ask questions about it.
+                        Upload a notice, circular or letter, in Konkani (Devanagari) or English. You&apos;ll get summaries in Konkani and English, and can ask questions about it.
                     </p>
                 </div>
 
@@ -425,20 +463,65 @@ export default function DocumentTab() {
                         </div>
 
                         <div className={`grid grid-cols-1 gap-4 ${result.summary_english ? "md:grid-cols-2" : ""}`}>
+                            {englishMode && result.summary_english && (
+                                <LanguagePanel label="English" text={result.summary_english} lang="en" />
+                            )}
                             <LanguagePanel label="कोंकणी" sublabel="Konkani" text={result.summary} lang="kok" />
-                            {result.summary_english && (
+                            {!englishMode && result.summary_english && (
                                 <LanguagePanel label="English" text={result.summary_english} lang="en" />
                             )}
                         </div>
 
-                        {result.english_translation && (
+                        {/* English documents: full Konkani translation on request (it takes a while) */}
+                        {englishDocument && result.english_translation && (
+                            <div className="rounded-2xl border border-border bg-card px-4 py-3 sm:px-5">
+                                {konkaniForThis?.state === "done" ? (
+                                    <div className="space-y-2">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <p className="text-sm font-semibold text-foreground">
+                                                <span lang="kok" className="devanagari">संपूर्ण कोंकणी अणकार</span>
+                                                <span className="ml-2 text-xs font-normal text-subtle-foreground">Full Konkani translation</span>
+                                            </p>
+                                            <CopyButton text={konkaniForThis.text} />
+                                        </div>
+                                        <p lang="kok" className="prose-answer devanagari whitespace-pre-line text-[15px] text-foreground">{konkaniForThis.text}</p>
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                        <p className="text-sm text-muted-foreground">
+                                            This document is in English. Translate all of it into Konkani?
+                                        </p>
+                                        <button
+                                            type="button"
+                                            onClick={translateToKonkani}
+                                            disabled={konkaniForThis?.state === "loading"}
+                                            className="flex items-center gap-2 rounded-full bg-foreground px-4 py-2 text-xs font-medium text-background transition-opacity disabled:opacity-60"
+                                        >
+                                            {konkaniForThis?.state === "loading"
+                                                ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Translating…</>
+                                                : <><Languages className="h-3.5 w-3.5" /> Translate to Konkani</>}
+                                        </button>
+                                        {konkaniForThis?.state === "error" && (
+                                            <p className="w-full text-sm text-destructive">{konkaniForThis.error}</p>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {result.english_translation && !englishDocument && (
                             <Disclosure title="Full English translation">
                                 <p className="prose-answer whitespace-pre-line text-sm text-muted-foreground">{result.english_translation}</p>
                             </Disclosure>
                         )}
                         {result.ocr_text && (
                             <Disclosure title="Extracted text (original)">
-                                <p lang="kok" className="prose-answer devanagari whitespace-pre-line text-sm text-muted-foreground">{result.ocr_text}</p>
+                                <p
+                                    lang={englishDocument ? "en" : "kok"}
+                                    className={`prose-answer whitespace-pre-line text-sm text-muted-foreground ${englishDocument ? "" : "devanagari"}`}
+                                >
+                                    {result.ocr_text}
+                                </p>
                             </Disclosure>
                         )}
 
@@ -452,7 +535,9 @@ export default function DocumentTab() {
                                 {docMessages.length === 0 && (
                                     <div className="space-y-3">
                                         <p className="text-sm text-subtle-foreground">
-                                            Answers are in Konkani. Ask for a summary to get it in Konkani and English.
+                                            {englishMode
+                                                ? "Answers are in English (English mode)."
+                                                : "Answers are in Konkani. Ask for a summary to get it in Konkani and English."}
                                         </p>
                                         <div className="flex flex-wrap gap-2">
                                             {QUESTION_SUGGESTIONS.map(s => (
@@ -497,7 +582,12 @@ export default function DocumentTab() {
                                                     />
                                                 </div>
                                             ) : msg.content ? (
-                                                <RichText text={msg.content} lang="kok" caret={streaming} className="text-[15px] text-foreground" />
+                                                <RichText
+                                                    text={msg.content}
+                                                    lang={/[\u0900-\u097F]/.test(msg.content) ? "kok" : "en"}
+                                                    caret={streaming}
+                                                    className="text-[15px] text-foreground"
+                                                />
                                             ) : null}
 
                                             {streaming && askStage && <StatusIndicator stage={askStage} since={askSince} />}

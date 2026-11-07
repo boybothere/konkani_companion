@@ -148,10 +148,11 @@ export function ChatMessages({ messages, isLoading, status, statusSince, onSugge
                   {msg.content && (
                     <RichText
                       text={msg.content}
-                      lang="kok"
+                      // English-mode answers are English; everything else is Konkani.
+                      lang={/[ऀ-ॿ]/.test(msg.content) ? "kok" : "en"}
                       sourceCount={msg.sources?.length ?? 0}
                       onCitation={(id) => showCitation(index, id)}
-                      caret={isStreaming && status === "translating"}
+                      caret={isStreaming && (status === "translating" || !/[ऀ-ॿ]/.test(msg.content))}
                       className="text-[15.5px] text-foreground"
                     />
                   )}

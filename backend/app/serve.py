@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from .envfile import load_env_file
+from .tunnel import open_tunnel, set_auth_token
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -44,18 +45,14 @@ def _open_ngrok(port: int) -> str:
     token = os.environ.get("NGROK_AUTHTOKEN", "").strip()
     if not token:
         raise SystemExit("--ngrok needs NGROK_AUTHTOKEN in the environment or backend/.env")
-    domain = (
-        os.environ.get("NGROK_DOMAIN", "").strip().removeprefix("https://").removeprefix("http://").strip("/")
-    )
-    ngrok.set_auth_token(token)
+    set_auth_token(token, ngrok)
     try:
-        tunnel = ngrok.connect(port, **({"domain": domain} if domain else {}))
+        return open_tunnel(port, os.environ.get("NGROK_DOMAIN"), ngrok)
     except Exception as exc:  # noqa: BLE001 - turn pyngrok errors into one readable line
         ngrok.kill()
         detail = str(exc)
         hint = next((text for code, text in _NGROK_HINTS.items() if code in detail), None)
         raise SystemExit(f"Could not open the ngrok tunnel. {hint or detail}") from None
-    return tunnel.public_url
 
 
 def main(argv: list[str] | None = None) -> None:

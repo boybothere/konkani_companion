@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
-import { PanelLeft, MessageSquare, FileSearch } from "lucide-react";
+import { PanelLeft, MessageSquare, FileSearch, Languages } from "lucide-react";
 
-export type Tab = "chat" | "document";
+export type Tab = "chat" | "document" | "interpreter";
 
 interface HeaderProps {
   onToggleSidebar: () => void;
@@ -14,6 +14,7 @@ interface HeaderProps {
 const TABS: { id: Tab; label: string; icon: typeof MessageSquare }[] = [
   { id: "chat", label: "Chat", icon: MessageSquare },
   { id: "document", label: "Document Lens", icon: FileSearch },
+  { id: "interpreter", label: "Interpreter", icon: Languages },
 ];
 
 export function Header({ onToggleSidebar, activeTab, onTabChange, children }: HeaderProps) {

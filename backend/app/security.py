@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from collections import defaultdict, deque
@@ -38,6 +39,48 @@ class RateLimiter:
         if len(hits) >= self.per_minute:
             raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests. Please wait a minute.")
         hits.append(now)
+        self._prune(now)
+
+    def _prune(self, now: float) -> None:
+        """Forget idle clients so memory stays bounded under many distinct ids."""
+        if len(self._hits) < 10_000:
+            return
+        for key in [k for k, h in self._hits.items() if not h or now - h[-1] > 60]:
+            del self._hits[key]
+
+
+class JobLimiter:
+    """Caps heavy jobs running at once. Extra requests wait briefly in a queue,
+    then are told the server is busy instead of piling up on the GPU."""
+
+    def __init__(self, max_jobs: int, timeout_s: float) -> None:
+        self.max_jobs = max_jobs
+        self.timeout_s = timeout_s
+        self._sem = asyncio.Semaphore(max_jobs) if max_jobs > 0 else None
+        self.running = 0
+        self.waiting = 0
+
+    async def acquire(self) -> None:
+        if self._sem is None:
+            return
+        self.waiting += 1
+        try:
+            await asyncio.wait_for(self._sem.acquire(), timeout=self.timeout_s)
+        except TimeoutError:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "The server is busy right now. Please try again in a moment.",
+                headers={"Retry-After": "10"},
+            ) from None
+        finally:
+            self.waiting -= 1
+        self.running += 1
+
+    def release(self) -> None:
+        if self._sem is None:
+            return
+        self.running -= 1
+        self._sem.release()
 
 
 def client_id(request: Request, settings: Settings) -> str:

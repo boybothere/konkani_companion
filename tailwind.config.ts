@@ -6,7 +6,7 @@ const config: Config = {
         "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
         "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
     ],
-    // @ts-ignore
+    // @ts-expect-error -- Tailwind v4 types omit `safelist`, but the v3-style config still reads it.
     safelist: [
         "bg-amber-500/15",
         "bg-amber-500/20",

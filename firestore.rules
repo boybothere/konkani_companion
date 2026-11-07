@@ -20,6 +20,24 @@ service cloud.firestore {
         && request.resource.data.updatedAt is number;
     }
 
+    // Each user's memory: short facts they let the app remember. Only the
+    // owner can read, change or delete it.
+    match /users/{userId}/profile/memory {
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['facts', 'enabled', 'updatedAt'])
+        && request.resource.data.facts is list
+        && request.resource.data.facts.size() <= 12
+        && request.resource.data.enabled is bool
+        && request.resource.data.updatedAt is number;
+    }
+
+    // Daily usage counters (usage/{uid}/days/{day}) are written only by the
+    // server with the Admin SDK, which bypasses these rules; browsers can't
+    // read or change them, so the catch-all below keeps them closed.
+
     // Everything else (including the old shared "chats" and "sessions"
     // collections) is closed.
     match /{document=**} {

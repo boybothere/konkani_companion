@@ -1,6 +1,7 @@
 """Request orchestration.
 
-Chat flow (output is always Devanagari Konkani):
+Chat flow (Devanagari Konkani output by default; English mode streams the
+reasoning model's English directly and skips the final translation step):
     input -> detect script -> [Qwen kok2en] -> [web search] -> Groq (streamed)
           -> segment at line/sentence boundaries -> Qwen en2kok per segment -> SSE
 
@@ -13,21 +14,33 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
 from . import guardrails, prompts
+from .memory import clean_facts, format_memory
+from .router import detect_translation, mismatch_note, plan_search
 from .config import Settings
 from .llm import LLM, GroqLLM, LLMError, MockLLM
 from .ocr import DocumentError, ExtractResult, extract_text
-from .search import SearchService, Source, make_snippet, should_search
+from .search import SearchService, Source, make_snippet
 from .stt import MockSTT, SpeechToText
 from .text_utils import Segment, StreamSegmenter, detect_input_language, devanagari_ratio
-from .translator import MockTranslator, Translator, translate_segment, translate_text
+from .translator import (
+    BatchingTranslator,
+    MockTranslator,
+    Translator,
+    translate_segment,
+    translate_segments,
+    translate_text,
+)
 
 logger = logging.getLogger("konkani.pipeline")
 
 REFUSAL_EN = "Sorry, I can't share that. Please ask me something else."
+
+OutputLanguage = str  # "kok" (default) or "en"
 
 
 @dataclass
@@ -47,11 +60,22 @@ class Services:
     canary: str = field(default_factory=guardrails.new_canary)
 
 
-def build_services(settings: Settings) -> Services:
-    """Load models and clients. Slow on GPU (model download + load)."""
-    if settings.model_backend == "mock":
-        translator: Translator = MockTranslator()
-        stt: SpeechToText = MockSTT()
+def build_services(
+    settings: Settings,
+    translator: Translator | None = None,
+    stt: SpeechToText | None = None,
+) -> Services:
+    """Load models and clients. Slow on GPU (model download + load).
+
+    Pass ``translator`` and ``stt`` to reuse models that are already loaded
+    (e.g. re-running the Colab cell after a code update) instead of loading a
+    second copy onto the GPU.
+    """
+    if translator is not None and stt is not None:
+        translator = getattr(translator, "inner", translator)  # unwrap an old batcher
+    elif settings.model_backend == "mock":
+        translator = MockTranslator(latency_s=settings.mock_latency_ms / 1000)
+        stt = MockSTT()
     else:
         from .stt import WhisperSTT
         from .translator import QwenTranslator
@@ -59,7 +83,14 @@ def build_services(settings: Settings) -> Services:
         gpu_lock = threading.Lock()  # one GPU job at a time
         translator = QwenTranslator(settings, gpu_lock)
         stt = WhisperSTT(settings, gpu_lock)
-    llm: LLM = MockLLM() if settings.llm_backend == "mock" else GroqLLM(settings)
+    if settings.translate_batch_size > 1:
+        # One GPU, many users: translate everyone's waiting segments together.
+        translator = BatchingTranslator(translator, settings.translate_batch_size)
+    llm: LLM = (
+        MockLLM(word_delay_s=0.02 if settings.mock_latency_ms else 0.0)
+        if settings.llm_backend == "mock"
+        else GroqLLM(settings)
+    )
     return Services(settings=settings, translator=translator, stt=stt, llm=llm, search=SearchService(settings))
 
 
@@ -89,15 +120,34 @@ def _history(messages: list[IncomingMessage], settings: Settings) -> list[prompt
 
 
 async def _translate(services: Services, text: str, direction: str) -> str:
+    settings = services.settings
     return await asyncio.to_thread(
-        translate_text, services.translator, text, direction, services.settings.translate_chunk_words
+        translate_text,
+        services.translator,
+        text,
+        direction,
+        settings.translate_chunk_words,
+        settings.translate_batch_size,
     )
 
 
+async def translate_any(services: Services, text: str, direction: str) -> tuple[str, str]:
+    """Translate text of any length. ``direction`` may be "auto": Devanagari
+    text goes to English, anything else to Konkani. Returns (translation, direction)."""
+    if direction == "auto":
+        direction = "kok2en" if detect_input_language(text) == "kok" else "en2kok"
+    return await _translate(services, text, direction), direction
+
+
 async def _answer_events(
-    services: Services, llm_messages: list[dict[str, str]], system_prompt: str
+    services: Services,
+    llm_messages: list[dict[str, str]],
+    system_prompt: str,
+    output_language: OutputLanguage = "kok",
 ) -> AsyncIterator[Event]:
-    """Stream the reasoning model, translating each finished segment."""
+    """Stream the reasoning model, translating each finished segment into
+    Konkani (or passing the English through in English mode)."""
+    english_mode = output_language == "en"
     settings = services.settings
     leak_guard = guardrails.LeakGuard(system_prompt=system_prompt, canary=services.canary)
     queue: asyncio.Queue[Segment | Exception | None] = asyncio.Queue()
@@ -118,9 +168,26 @@ async def _answer_events(
 
     producer = asyncio.create_task(produce())
     emitted_any = False
+    # Items taken from the queue while grouping a batch, but not part of it.
+    backlog: deque[Segment | Exception | None] = deque()
+
+    def ready_segment() -> Segment | None:
+        """Another finished segment, if one is already waiting (no blocking)."""
+        if backlog:
+            nxt = backlog[0]
+        elif not queue.empty():
+            nxt = queue.get_nowait()
+            backlog.append(nxt)
+        else:
+            return None
+        if isinstance(nxt, Segment) and nxt.text:
+            backlog.popleft()
+            return nxt
+        return None
+
     try:
         while True:
-            item = await queue.get()
+            item = backlog.popleft() if backlog else await queue.get()
             if item is None:
                 break
             if isinstance(item, Exception):
@@ -135,7 +202,7 @@ async def _answer_events(
             if leak_guard.leaked("".join(english_parts)):
                 logger.warning("blocked output: system prompt leakage detected")
                 producer.cancel()
-                refusal = await asyncio.to_thread(
+                refusal = REFUSAL_EN if english_mode else await asyncio.to_thread(
                     translate_segment, services.translator, REFUSAL_EN, "en2kok"
                 )
                 prefix = "\n\n" if emitted_any else ""
@@ -146,12 +213,30 @@ async def _answer_events(
             # The English segment is ready before its translation, so clients
             # that show both languages can display it straight away.
             yield Event("english_delta", item.text + item.sep)
+            if english_mode:
+                yield Event("delta", item.text + item.sep)
+                emitted_any = True
+                continue
+            # The model often writes faster than we translate: translate every
+            # segment that is already waiting in one GPU batch.
+            group = [item]
+            while len(group) < settings.translate_batch_size:
+                nxt = ready_segment()
+                if nxt is None:
+                    break
+                yield Event("english_delta", nxt.text + nxt.sep)
+                group.append(nxt)
             if not emitted_any:
                 yield Event("status", {"stage": "translating"})
             konkani = await asyncio.to_thread(
-                translate_segment, services.translator, item.text, "en2kok"
+                translate_segments,
+                services.translator,
+                [s.text for s in group],
+                "en2kok",
+                settings.translate_batch_size,
             )
-            yield Event("delta", konkani + item.sep)
+            for segment, text in zip(group, konkani):
+                yield Event("delta", text + segment.sep)
             emitted_any = True
     finally:
         if not producer.done():
@@ -174,13 +259,36 @@ def _public_sources(sources: list[Source]) -> list[dict[str, Any]]:
 
 
 async def chat_events(
-    services: Services, messages: list[IncomingMessage], language_hint: str
+    services: Services,
+    messages: list[IncomingMessage],
+    language_hint: str,
+    output_language: OutputLanguage = "kok",
+    memory: list[str] | None = None,
 ) -> AsyncIterator[Event]:
     settings = services.settings
     try:
         user_text = guardrails.clean_user_input(messages[-1].content, settings.max_input_chars)
     except guardrails.InputRejected as exc:
         yield Event("error", {"message": str(exc)})
+        yield Event("done")
+        return
+
+    # "Translate X to English" and similar: straight to the translation model.
+    request = detect_translation(user_text)
+    if request is not None:
+        yield Event("status", {"stage": "translating"})
+        translation = await _translate(services, request.text, request.direction)
+        english = translation if request.target == "en" else request.text
+        yield Event("meta", {
+            "input_language": "kok" if request.target == "en" else "en",
+            "query_en": f"Translate into {'English' if request.target == 'en' else 'Konkani'}: {english}",
+            "output_language": request.target,
+            "route": "translate",
+        })
+        note = mismatch_note(request)
+        yield Event("english_delta", english)
+        yield Event("delta", note + translation)
+        yield Event("english", {"text": english})
         yield Event("done")
         return
 
@@ -193,13 +301,21 @@ async def chat_events(
     flags = guardrails.scan(query_en)
     if flags:
         logger.info("user input matched injection patterns: %s", flags)
-    yield Event("meta", {"input_language": input_lang, "query_en": query_en})
+    yield Event("meta", {"input_language": input_lang, "query_en": query_en, "output_language": output_language})
 
     sources: list[Source] = []
-    attempted = should_search(query_en, settings.search_mode)
+    history = _history(messages[:-1], settings)
+    plan = await plan_search(
+        services.llm,
+        settings,
+        query_en,
+        [(t.role, t.text) for t in history],
+        clean_facts(list(memory or [])),
+    )
+    attempted = plan.search
     if attempted:
         yield Event("status", {"stage": "searching"})
-        result = await services.search.search(query_en)
+        result = await services.search.search(plan.query)
         sources = result.sources
         if result.errors:
             logger.info("search errors: %s", result.errors)
@@ -209,19 +325,20 @@ async def chat_events(
     system_prompt = prompts.chat_system_prompt(services.canary)
     llm_messages = prompts.build_chat_messages(
         system_prompt,
-        _history(messages[:-1], settings),
+        history,
         query_en,
         sources,
         attempted,
         settings.search_source_chars,
+        format_memory(clean_facts(list(memory or []))),
     )
-    async for event in _answer_events(services, llm_messages, system_prompt):
+    async for event in _answer_events(services, llm_messages, system_prompt, output_language):
         yield event
     yield Event("done")
 
 
 async def document_chat_events(
-    services: Services, question: str, document_en: str
+    services: Services, question: str, document_en: str, output_language: OutputLanguage = "kok"
 ) -> AsyncIterator[Event]:
     settings = services.settings
     try:
@@ -243,7 +360,7 @@ async def document_chat_events(
     llm_messages = prompts.build_document_messages(
         system_prompt, document_en, f"User question:\n{question_en}", settings.max_document_chars
     )
-    async for event in _answer_events(services, llm_messages, system_prompt):
+    async for event in _answer_events(services, llm_messages, system_prompt, output_language):
         yield event
     yield Event("done")
 

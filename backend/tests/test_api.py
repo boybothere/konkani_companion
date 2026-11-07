@@ -216,3 +216,16 @@ def test_document_chat_streams_konkani(services):
     assert events[-1][1] == "[DONE]"
     assert answer_text(events).startswith("[KOK]")
     assert "untrusted_document_" in services.llm.last_messages[-1]["content"]
+
+
+def test_build_services_reuses_loaded_models(settings):
+    from app.pipeline import build_services
+    from app.stt import MockSTT
+    from app.translator import BatchingTranslator, MockTranslator
+
+    model, ears = MockTranslator(), MockSTT()
+    first = build_services(settings, translator=model, stt=ears)
+    again = build_services(settings, translator=first.translator, stt=first.stt)
+    assert again.stt is ears
+    inner = again.translator.inner if isinstance(again.translator, BatchingTranslator) else again.translator
+    assert inner is model  # the same model object, not a second copy

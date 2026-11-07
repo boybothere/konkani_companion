@@ -1,0 +1,280 @@
+"""Routing: translation requests skip search and the reasoning model; search only when needed."""
+
+import asyncio
+from dataclasses import replace
+
+import pytest
+
+from app.llm import MockLLM
+from app.router import detect_translation, needs_search, rule_decision
+from test_api import answer_text, client_for, parse_sse
+
+
+@pytest.mark.parametrize(
+    "message, text, target",
+    [
+        ('Translate the given sentence to english "गोंयची राजधानी खंयची?"', "गोंयची राजधानी खंयची?", "en"),
+        ("translate to konkani: Where is the bus stand?", "Where is the bus stand?", "kok"),
+        ("Translate 'Good morning, how are you?' into Konkani", "Good morning, how are you?", "kok"),
+        ("Please translate this sentence: बाजार खंय आसा?", "बाजार खंय आसा?", "en"),
+        ("translate where is the market to konkani", "where is the market", "kok"),
+        ("translate गोंय सोबीत आसा", "गोंय सोबीत आसा", "en"),  # no target: the other language
+        ('What does "देव बरें करूं" mean in English?', "देव बरें करूं", "en"),
+        ("How do you say thank you in Konkani?", "thank you", "kok"),
+        ("हें इंग्लीशींत अणकार कर: म्हाका उदक जाय", "म्हाका उदक जाय", "en"),
+        ("“Where is the hospital?” कोंकणींत", "Where is the hospital?", "kok"),
+    ],
+)
+def test_translation_requests_are_detected(message, text, target):
+    req = detect_translation(message)
+    assert req is not None, message
+    assert (req.text, req.target) == (text, target)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "What is the capital of Goa?",
+        "Tell me about the history of the Konkani language",
+        "गोंयची राजधानी खंयची?",
+        "Is English or Konkani older?",
+        "translate to english",  # nothing to translate
+        "हांव कोंकणींत उलयता",  # mentions Konkani, no request
+    ],
+)
+def test_ordinary_questions_are_not_translations(message):
+    assert detect_translation(message) is None
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("hello", False),
+        ("thank you!", False),
+        ("What is the weather in Panaji today?", True),
+        ("latest news about Goa elections", True),
+        ("Who is the current chief minister of Goa?", True),
+        ("price of cashew per kg", True),
+        ("What is 245 * 12?", None),
+        ("245 * 12", False),
+        ("Write a poem about the monsoon", False),
+        ("What is the meaning of serendipity?", False),
+        ("Explain photosynthesis simply", None),
+    ],
+)
+def test_rules(query, expected):
+    assert rule_decision(query) is expected
+
+
+def test_router_model_decides_unclear_cases(settings):
+    llm = MockLLM()
+    llm.route_reply = "NO"
+    assert asyncio.run(needs_search(llm, settings, "Explain photosynthesis simply")) is False
+    llm.route_reply = "SEARCH"
+    assert asyncio.run(needs_search(llm, settings, "Explain photosynthesis simply")) is True
+    assert len(llm.classified) == 2
+    # Clear cases never call the model.
+    asyncio.run(needs_search(llm, settings, "weather in Margao today"))
+    assert len(llm.classified) == 2
+
+
+def test_router_failure_falls_back_to_searching(settings):
+    class Down(MockLLM):
+        async def classify(self, messages, model, max_tokens=4):
+            raise TimeoutError
+
+    assert asyncio.run(needs_search(Down(), settings, "Explain photosynthesis simply")) is True
+
+
+def test_search_mode_overrides_the_router(settings):
+    llm = MockLLM()
+    llm.route_reply = "NO"
+    assert asyncio.run(needs_search(llm, replace(settings, search_mode="always"), "hello")) is True
+    assert asyncio.run(needs_search(llm, replace(settings, search_mode="never"), "news today")) is False
+
+
+def test_translation_request_skips_search_and_reasoning(services):
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": 'Translate the given sentence to english "गोंयची राजधानी खंयची?"'}]},
+        )
+    events = parse_sse(r.text)
+    names = [n for n, _ in events]
+    assert "sources" not in names
+    assert services.search.queries == []  # no web search
+    assert services.llm.last_messages == []  # the reasoning model was never called
+    assert services.translator.calls == [("kok2en", "गोंयची राजधानी खंयची?")]
+    assert answer_text(events).strip() == "[EN] गोंयची राजधानी खंयची?"
+    meta = next(d for n, d in events if n == "meta")
+    assert meta["route"] == "translate" and meta["output_language"] == "en"
+    assert events[-1][1] == "[DONE]"
+
+
+def test_router_says_no_search_then_answer_has_no_sources(services):
+    services.llm.route_reply = "NO"
+    with client_for(services) as client:
+        r = client.post("/openai/v1/chat/completions", json={"messages": [{"role": "user", "content": "Explain photosynthesis simply"}]})
+    assert "sources" not in [n for n, _ in parse_sse(r.text)]
+    assert services.search.queries == []
+    assert "[KOK]" in answer_text(parse_sse(r.text))
+
+
+@pytest.mark.parametrize(
+    "message, text, target",
+    [
+        ("translate to english: where is the bus stand?", "where is the bus stand?", "kok"),
+        ('Translate "Hello there" to English', "Hello there", "kok"),
+        ("translate to konkani: म्हाका उदक जाय", "म्हाका उदक जाय", "en"),
+    ],
+)
+def test_already_in_requested_language_translates_to_the_other(message, text, target):
+    req = detect_translation(message)
+    assert req is not None and req.already_in_requested
+    assert (req.text, req.target) == (text, target)
+
+
+def test_mix_up_is_explained_in_the_answer(services):
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "translate to english: where is the bus stand?"}]},
+        )
+    text = answer_text(parse_sse(r.text))
+    assert text.startswith("That text is already in English. Here it is in Konkani:")
+    assert "[KOK] where is the bus stand?" in text
+    assert services.search.queries == [] and services.llm.last_messages == []
+
+
+def test_correct_requests_have_no_note(services):
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "translate to konkani: where is the bus stand?"}]},
+        )
+    assert answer_text(parse_sse(r.text)).strip() == "[KOK] where is the bus stand?"
+
+
+@pytest.mark.parametrize(
+    "query, statement",
+    [
+        ("I live in margao and i grow cashews", True),
+        ("I'm a teacher in Ponda", True),
+        ("My name is Ana", True),
+        ("We have a small paddy field near Canacona.", True),
+        ("I live in Margao. What crops suit my area?", False),
+        ("I want to know the price of cashew", False),
+        ("I need help with my ration card", False),
+        ("How do I grow cashew?", False),
+        ("Can you tell me about Margao", False),
+        ("Margao is a nice town", False),
+    ],
+)
+def test_personal_statements(query, statement):
+    from app.router import is_personal_statement
+
+    assert is_personal_statement(query) is statement
+
+
+def test_personal_statement_never_searches(services):
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "I live in margao and i grow cashews"}]},
+        )
+    assert services.search.queries == []
+    assert services.llm.classified == []  # decided by rules, no router call
+    assert "sources" not in [n for n, _ in parse_sse(r.text)]
+    system = services.llm.last_messages[0]["content"]
+    assert "telling you something about themselves" in system
+
+
+def test_clause_questions_are_not_statements():
+    from app.router import is_personal_statement
+
+    assert is_personal_statement("I grow cashew in Margao, is it a good crop") is False
+    assert is_personal_statement("My farm is in Margao and it is doing well") is True
+
+
+CASHEW_CHAT = [
+    {"role": "user", "content": "I live in margao and i grow cashews", "english": "I live in margao and i grow cashews"},
+    {"role": "assistant", "content": "That sounds wonderful!", "english": "That sounds wonderful!"},
+]
+
+
+def test_follow_up_search_uses_a_standalone_query(services):
+    services.llm.route_reply = '{"search": true, "query": "cashew tree pests treatment Goa"}'
+    with client_for(services) as client:
+        client.post(
+            "/openai/v1/chat/completions",
+            json={
+                "messages": CASHEW_CHAT + [{"role": "user", "content": "What should I do about the pests on my trees?"}],
+                "memory": ["Grows cashews"],
+            },
+        )
+    assert services.search.queries == ["cashew tree pests treatment Goa"]
+    planner_input = services.llm.classified[0]
+    assert "i grow cashews" in planner_input and "Grows cashews" in planner_input
+    assert "pests on my trees" in planner_input
+
+
+def test_question_about_the_conversation_does_not_search(services):
+    services.llm.route_reply = '{"search": false, "query": ""}'
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": CASHEW_CHAT + [{"role": "user", "content": "you know which tree am talking about right?"}]},
+        )
+    assert services.search.queries == []
+    assert "sources" not in [n for n, _ in parse_sse(r.text)]
+    # The model still sees the conversation that answers the question.
+    assert any("grow cashews" in m["content"] for m in services.llm.last_messages)
+
+
+def test_keyword_rules_still_force_a_search_but_get_the_better_query(services):
+    services.llm.route_reply = '{"search": false, "query": "cashew price Goa today"}'
+    with client_for(services) as client:
+        client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": CASHEW_CHAT + [{"role": "user", "content": "what is the price today?"}]},
+        )
+    assert services.search.queries == ["cashew price Goa today"]
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        ('{"search": true, "query": "x y"}', (True, "x y")),
+        ('Sure: {"search": false, "query": ""}', (False, "orig")),
+        ("SEARCH", (True, "orig")),
+        ("NO", (False, "orig")),
+        ("banana", None),
+        ('{"search": "yes"}', None),
+    ],
+)
+def test_plan_parsing(reply, expected):
+    from app.router import _parse_plan
+
+    plan = _parse_plan(reply, "orig")
+    assert (plan if plan is None else (plan.search, plan.query)) == expected
+
+
+def test_planner_failure_falls_back_to_rules(services):
+    class Down(MockLLM):
+        async def classify(self, messages, model, max_tokens=4):
+            raise TimeoutError
+
+    services.llm = Down()
+    with client_for(services) as client:
+        client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": CASHEW_CHAT + [{"role": "user", "content": "Explain how to prune trees"}]},
+        )
+    assert services.search.queries == ["Explain how to prune trees"]  # unsure + no planner: search, as before
+
+
+def test_system_prompt_tells_the_model_to_resolve_follow_ups(services):
+    with client_for(services) as client:
+        client.post("/openai/v1/chat/completions", json={"messages": [{"role": "user", "content": "Hello there friend, explain rain"}]})
+    system = services.llm.last_messages[0]["content"]
+    assert "my trees" in system and "Never say you don't know what they mean" in system

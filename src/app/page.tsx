@@ -3,16 +3,29 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Header, type Tab } from "@/components/Header";
 import { ChatMessages, type Message } from "@/components/ChatMessages";
-import ChatInput from "@/components/ChatInput";
+import ChatInput, { type AnswerLanguage } from "@/components/ChatInput";
 import { ChatToolbar } from "@/components/ChatToolbar";
 import { Sidebar } from "@/components/Sidebar";
 import DocumentTab from "@/components/DocumentTab";
+import InterpreterTab from "@/components/InterpreterTab";
 import { readCompanionStream } from "@/lib/sse";
 import type { User } from "firebase/auth";
 import { AuthProvider, useAuth } from "@/components/auth/AuthProvider";
 import { SignInScreen, SplashScreen } from "@/components/auth/SignInScreen";
 import { authFetch } from "@/lib/authFetch";
 import * as chatStore from "@/lib/chatStore";
+import { transcribe } from "@/lib/speech";
+import {
+  EMPTY_MEMORY,
+  clearMemory,
+  loadMemory,
+  mightContainPersonalInfo,
+  proposeMemory,
+  sameFacts,
+  saveMemory,
+  type MemoryState,
+} from "@/lib/memory";
+import { MemoryPanel } from "@/components/MemoryPanel";
 
 const isDesktop = () => window.matchMedia("(min-width: 768px)").matches;
 const isAbort = (error: unknown) => (error as Error)?.name === "AbortError";
@@ -23,9 +36,47 @@ const normalise = (messages: Message[]): Message[] =>
 
 const newSessionId = () => Date.now().toString();
 
+const LANGUAGE_KEY = "kc:language";
+
+// The conversation language (the English | Konkani toggle), remembered per
+// browser. Konkani unless the user chose English.
+function useConversationLanguage(): [AnswerLanguage, (language: AnswerLanguage) => void] {
+  const [language, setLanguage] = useState<AnswerLanguage>("kok");
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after hydration
+      if (localStorage.getItem(LANGUAGE_KEY) === "en") setLanguage("en");
+    } catch {
+      // storage unavailable: keep the default
+    }
+  }, []);
+  const update = (next: AnswerLanguage) => {
+    setLanguage(next);
+    try {
+      localStorage.setItem(LANGUAGE_KEY, next);
+    } catch {
+      // storage unavailable: the choice lasts for this visit only
+    }
+  };
+  return [language, update];
+}
+
 function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   const uid = user.uid;
   const [activeTab, setActiveTab] = useState<Tab>("chat");
+  const [language, setLanguage] = useConversationLanguage();
+  const languageRef = useRef<AnswerLanguage>("kok");
+  useEffect(() => {
+    languageRef.current = language;
+  }, [language]);
+  const [memory, setMemory] = useState<MemoryState>(EMPTY_MEMORY);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  // The latest memory, for use inside async callbacks.
+  const memoryRef = useRef<MemoryState>(EMPTY_MEMORY);
+  useEffect(() => {
+    memoryRef.current = memory;
+  }, [memory]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -48,11 +99,16 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   // user's history from Firestore (other devices) into the local cache.
   useEffect(() => {
     const moved = chatStore.migrateLegacy(uid);
+    // Local storage is an external store: sync the sidebar from it after sign-in.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     syncSidebarFromStorage();
     moved.forEach((id) => {
       const legacy = chatStore.loadLocal(uid, id);
       if (legacy) chatStore.saveRemote(uid, id, legacy).catch(() => {});
     });
+    loadMemory(uid)
+      .then(setMemory)
+      .catch((err) => console.warn("Couldn't load memory:", err));
     chatStore
       .syncFromRemote(uid)
       .then(syncSidebarFromStorage)
@@ -64,6 +120,8 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
     const loaded = normalise(chatStore.loadLocal(uid, currentSessionId) ?? []);
     // Opening a chat is not a change: don't re-save it (that would bump it to the top).
     savedRef.current[currentSessionId] = JSON.stringify(loaded);
+    // Loading the selected chat from local storage (an external store).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMessages(loaded);
     syncSidebarFromStorage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -91,12 +149,45 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
       return next;
     });
 
+  const updateMemory = (next: MemoryState) => {
+    setMemory(next);
+    setMemoryError(null);
+    saveMemory(uid, next).catch((err) => {
+      console.warn("Couldn't save memory:", err);
+      setMemoryError("Couldn't save your memory. Check your connection and try again.");
+    });
+  };
+
+  const forgetEverything = () => {
+    const next = { facts: [], enabled: memoryRef.current.enabled };
+    setMemory(next);
+    clearMemory(uid)
+      .then(() => saveMemory(uid, next))
+      .catch(() => setMemoryError("Couldn't clear your memory. Please try again."));
+  };
+
+  /** After a finished answer, let the server propose memory updates (rarely). */
+  const maybeRemember = (original: string, questionEn: string, answerEn: string) => {
+    const current = memoryRef.current;
+    if (!current.enabled || !questionEn || !mightContainPersonalInfo(questionEn, original)) return;
+    proposeMemory(current.facts, questionEn, answerEn)
+      .then((facts) => {
+        const latest = memoryRef.current;
+        if (facts && latest.enabled && !sameFacts(facts, latest.facts)) updateMemory({ ...latest, facts });
+      })
+      .catch(() => {}); // memory is best-effort; never disturb the chat
+  };
+
   const setStage = (stage: string | null) => {
     setStatus(stage);
     setStatusSince((since) => (stage ? since ?? Date.now() : null));
   };
 
-  const handleSendMessage = async (content: string, language: "en" | "kok") => {
+  const handleSendMessage = async (
+    content: string,
+    language: "en" | "kok",
+    conversationLanguage: AnswerLanguage = languageRef.current,
+  ) => {
     if (!content.trim() || isLoading) return;
 
     const history: Message[] = [...messages, { role: "user", content }];
@@ -112,6 +203,9 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
     const patch: typeof updateLast = (p) => { if (current()) updateLast(p); };
 
     let answer = "";
+    let questionEn = "";
+    let answerEn = "";
+    let failed = false;
     try {
       const res = await authFetch("/api/chat", {
         method: "POST",
@@ -120,6 +214,10 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           // The English versions let the backend keep conversation context.
           messages: history.map(({ role, content, english }) => ({ role, content, english })),
           language,
+          // The toggle decides the answer language; `language` above is only a
+          // hint for detecting the question's language (it's detected from its script).
+          output_language: conversationLanguage,
+          memory: memory.enabled ? memory.facts : [],
         }),
         signal: controller.signal,
       });
@@ -136,6 +234,7 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
             if (current()) setStage(event.stage);
             break;
           case "meta":
+            questionEn = event.queryEn;
             if (current()) setMessages((prev) => {
               const next = [...prev];
               const userIndex = next.length - 2;
@@ -151,9 +250,11 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
             patch({ content: answer });
             break;
           case "english":
+            answerEn = event.text;
             patch({ english: event.text });
             break;
           case "error":
+            failed = true;
             patch({ error: event.message });
             break;
           case "done":
@@ -163,6 +264,8 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
       }
       if (!finished) {
         patch((m) => ({ error: m.error ?? "The connection closed before the answer finished. Please try again." }));
+      } else if (!failed && current()) {
+        maybeRemember(content, questionEn, answerEn);
       }
 
 
@@ -189,14 +292,8 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
 
   const stopGenerating = () => abortRef.current?.abort();
 
-  const handleAudioSubmit = async (audioBlob: Blob): Promise<string> => {
-    const formData = new FormData();
-    formData.append("file", audioBlob, "audio.webm");
-    const res = await authFetch("/api/transcribe", { method: "POST", body: formData });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || "Transcription failed. Please try again.");
-    return typeof data.text === "string" ? data.text : "";
-  };
+  // English or Konkani speech is detected on the server, whatever the toggle says.
+  const handleAudioSubmit = (audioBlob: Blob): Promise<string> => transcribe(audioBlob, "auto");
 
   const switchSession = (id: string) => {
     setMobileSidebar(false);
@@ -245,6 +342,8 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         onSearchChange={setSearchQuery}
         onRenameChat={renameChat}
         account={{ name: user.displayName, email: user.email, photoURL: user.photoURL }}
+        onOpenMemory={() => setMemoryOpen(true)}
+        memoryCount={memory.enabled ? memory.facts.length : 0}
         onSignOut={() => {
           runRef.current++;
           abortRef.current?.abort();
@@ -262,6 +361,15 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
             syncSidebarFromStorage();
           }
         }}
+      />
+
+      <MemoryPanel
+        open={memoryOpen}
+        onClose={() => setMemoryOpen(false)}
+        memory={memory}
+        onChange={updateMemory}
+        onClearAll={forgetEverything}
+        error={memoryError}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -290,13 +398,18 @@ function ChatApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           <ChatInput
             onSendMessage={handleSendMessage}
             onAudioSubmit={handleAudioSubmit}
+            language={language}
+            onLanguageChange={setLanguage}
             busy={isLoading}
             onStop={stopGenerating}
             onAttach={() => setActiveTab("document")}
           />
         </div>
         <div className={`min-h-0 flex-1 ${activeTab === "document" ? "block" : "hidden"}`}>
-          <DocumentTab />
+          <DocumentTab answerLanguage={language} />
+        </div>
+        <div className={`min-h-0 flex-1 ${activeTab === "interpreter" ? "block" : "hidden"}`}>
+          <InterpreterTab />
         </div>
       </main>
     </div>

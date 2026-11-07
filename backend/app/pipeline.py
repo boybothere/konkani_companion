@@ -20,7 +20,7 @@ from typing import Any, AsyncIterator, Callable
 
 from . import guardrails, prompts
 from .memory import clean_facts, format_memory
-from .router import detect_translation, mismatch_note, needs_search
+from .router import detect_translation, mismatch_note, plan_search
 from .config import Settings
 from .llm import LLM, GroqLLM, LLMError, MockLLM
 from .ocr import DocumentError, ExtractResult, extract_text
@@ -304,10 +304,18 @@ async def chat_events(
     yield Event("meta", {"input_language": input_lang, "query_en": query_en, "output_language": output_language})
 
     sources: list[Source] = []
-    attempted = await needs_search(services.llm, settings, query_en)
+    history = _history(messages[:-1], settings)
+    plan = await plan_search(
+        services.llm,
+        settings,
+        query_en,
+        [(t.role, t.text) for t in history],
+        clean_facts(list(memory or [])),
+    )
+    attempted = plan.search
     if attempted:
         yield Event("status", {"stage": "searching"})
-        result = await services.search.search(query_en)
+        result = await services.search.search(plan.query)
         sources = result.sources
         if result.errors:
             logger.info("search errors: %s", result.errors)
@@ -317,7 +325,7 @@ async def chat_events(
     system_prompt = prompts.chat_system_prompt(services.canary)
     llm_messages = prompts.build_chat_messages(
         system_prompt,
-        _history(messages[:-1], settings),
+        history,
         query_en,
         sources,
         attempted,

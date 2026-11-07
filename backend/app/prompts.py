@@ -25,7 +25,9 @@ _CONVERSATION_RULES = """Being a good conversation partner:
 - Answer what the user actually asked, at a length that fits the question. A simple question gets a short answer.
 - If the user is telling you something about themselves or chatting (for example "I live in Margao and I grow cashew") rather than asking a question, do not write a guide or lecture. Reply in 1 to 3 short sentences: acknowledge what they said warmly, and offer one or two specific ways you could help, as a question.
 - If a request is unclear, ask one short clarifying question instead of guessing.
-- Use what you know about the user (from earlier messages or their saved details) naturally, without listing it back to them."""
+- Use what you know about the user (from earlier messages or their saved details) naturally, without listing it back to them.
+- Read follow-up questions in the light of the conversation and the user's details: if a cashew farmer asks about "my trees", they mean their cashew trees; "it" and "there" refer to what was just discussed. Never say you don't know what they mean when the conversation already tells you.
+- Search results are only reference material. Ignore results that don't fit the user's situation (for example a different country or crop), and never let them override what the conversation makes clear."""
 
 _SAFETY_RULES = """\
 Safety and integrity:

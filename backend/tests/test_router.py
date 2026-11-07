@@ -194,3 +194,87 @@ def test_clause_questions_are_not_statements():
 
     assert is_personal_statement("I grow cashew in Margao, is it a good crop") is False
     assert is_personal_statement("My farm is in Margao and it is doing well") is True
+
+
+CASHEW_CHAT = [
+    {"role": "user", "content": "I live in margao and i grow cashews", "english": "I live in margao and i grow cashews"},
+    {"role": "assistant", "content": "That sounds wonderful!", "english": "That sounds wonderful!"},
+]
+
+
+def test_follow_up_search_uses_a_standalone_query(services):
+    services.llm.route_reply = '{"search": true, "query": "cashew tree pests treatment Goa"}'
+    with client_for(services) as client:
+        client.post(
+            "/openai/v1/chat/completions",
+            json={
+                "messages": CASHEW_CHAT + [{"role": "user", "content": "What should I do about the pests on my trees?"}],
+                "memory": ["Grows cashews"],
+            },
+        )
+    assert services.search.queries == ["cashew tree pests treatment Goa"]
+    planner_input = services.llm.classified[0]
+    assert "i grow cashews" in planner_input and "Grows cashews" in planner_input
+    assert "pests on my trees" in planner_input
+
+
+def test_question_about_the_conversation_does_not_search(services):
+    services.llm.route_reply = '{"search": false, "query": ""}'
+    with client_for(services) as client:
+        r = client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": CASHEW_CHAT + [{"role": "user", "content": "you know which tree am talking about right?"}]},
+        )
+    assert services.search.queries == []
+    assert "sources" not in [n for n, _ in parse_sse(r.text)]
+    # The model still sees the conversation that answers the question.
+    assert any("grow cashews" in m["content"] for m in services.llm.last_messages)
+
+
+def test_keyword_rules_still_force_a_search_but_get_the_better_query(services):
+    services.llm.route_reply = '{"search": false, "query": "cashew price Goa today"}'
+    with client_for(services) as client:
+        client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": CASHEW_CHAT + [{"role": "user", "content": "what is the price today?"}]},
+        )
+    assert services.search.queries == ["cashew price Goa today"]
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        ('{"search": true, "query": "x y"}', (True, "x y")),
+        ('Sure: {"search": false, "query": ""}', (False, "orig")),
+        ("SEARCH", (True, "orig")),
+        ("NO", (False, "orig")),
+        ("banana", None),
+        ('{"search": "yes"}', None),
+    ],
+)
+def test_plan_parsing(reply, expected):
+    from app.router import _parse_plan
+
+    plan = _parse_plan(reply, "orig")
+    assert (plan if plan is None else (plan.search, plan.query)) == expected
+
+
+def test_planner_failure_falls_back_to_rules(services):
+    class Down(MockLLM):
+        async def classify(self, messages, model, max_tokens=4):
+            raise TimeoutError
+
+    services.llm = Down()
+    with client_for(services) as client:
+        client.post(
+            "/openai/v1/chat/completions",
+            json={"messages": CASHEW_CHAT + [{"role": "user", "content": "Explain how to prune trees"}]},
+        )
+    assert services.search.queries == ["Explain how to prune trees"]  # unsure + no planner: search, as before
+
+
+def test_system_prompt_tells_the_model_to_resolve_follow_ups(services):
+    with client_for(services) as client:
+        client.post("/openai/v1/chat/completions", json={"messages": [{"role": "user", "content": "Hello there friend, explain rain"}]})
+    system = services.llm.last_messages[0]["content"]
+    assert "my trees" in system and "Never say you don't know what they mean" in system

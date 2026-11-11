@@ -51,3 +51,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+# Training data (private; never commit)
+/dataset/
+*.jsonl

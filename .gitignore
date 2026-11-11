@@ -55,3 +55,4 @@ venv/
 # Training data (private; never commit)
 /dataset/
 *.jsonl
+/trainer_states/
